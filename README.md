@@ -188,7 +188,23 @@ check_khovanov_directory_parallel(
 The serial version is still available as `check_khovanov_directory(...)`, but
 the parallel version is recommended for real validation. It uses process-based
 parallelism, prefers the `fork` start method when Sage provides it, and checks
-one generated txt file per worker task.
+one generated txt file per worker task. By default the checker uses Sage's
+default Khovanov implementation; pass `implementation=...` only when you need
+to force a specific Sage backend supported by your installed Sage version.
+
+If a parallel run reports many immediate failures, first inspect the first few
+failure samples printed by the checker or the `failures` entries in the JSON
+report. Then run one file without worker exception wrapping:
+
+```sage
+diagnose_khovanov_file(
+    "data/com_link_gen_10-v0.1.0-com_link_gen-10-3/0000001.txt",
+    mask=0,
+)
+```
+
+The JSON report is normalized to plain Python JSON values, including Sage
+integer values in counters and summaries.
 
 The Sage checker intentionally enumerates all `2^n` component orientations. For
 each orientation it builds an oriented Gauss code, computes integral Khovanov

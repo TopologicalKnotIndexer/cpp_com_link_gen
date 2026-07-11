@@ -209,12 +209,12 @@ def oriented_gauss_code_for_mask(pd_code, mask):
 
 
 def _parse_module_repr(text):
-    text = text.replace(" ", "")
+    text = text.replace(" ", "").replace("\u00d7", "x")
     if text in ("", "0"):
         return ()
 
     invariants = []
-    for part in re.split(r"x|×|\*", text):
+    for part in re.split(r"x|\*", text):
         if not part:
             continue
         if part == "Z":
@@ -253,6 +253,12 @@ def sage_module_to_invariants(module):
     return _parse_module_repr(str(module))
 
 
+def _sage_khovanov_homology(link, implementation=None):
+    if implementation is None:
+        return link.khovanov_homology(ring=ZZ)
+    return link.khovanov_homology(ring=ZZ, implementation=implementation)
+
+
 def sage_homology_to_canonical(homology):
     """Convert Sage's nested Khovanov dictionary to a canonical tuple."""
     terms = []
@@ -264,17 +270,17 @@ def sage_homology_to_canonical(homology):
     return tuple(sorted(terms))
 
 
-def sage_khovanov_for_orientation(pd_code, mask, implementation="native"):
+def sage_khovanov_for_orientation(pd_code, mask, implementation=None):
     """Compute canonical Sage Khovanov homology for one orientation mask."""
     if not pd_code:
         link = Knots().one()
     else:
         link = Link(oriented_gauss_code_for_mask(pd_code, mask))
-    homology = link.khovanov_homology(ring=ZZ, implementation=implementation)
+    homology = _sage_khovanov_homology(link, implementation=implementation)
     return sage_homology_to_canonical(homology)
 
 
-def sage_khovanov_all_orientations(pd_code, implementation="native"):
+def sage_khovanov_all_orientations(pd_code, implementation=None):
     """Return ``[(mask, canonical_homology), ...]`` for all 2^n orientations."""
     component_count = len(components_from_pd(pd_code))
     orientation_count = 1 if component_count == 0 else 2 ** component_count
@@ -289,7 +295,7 @@ def expected_homology_set_from_file(path):
     return pd_code, set(parse_cppkh_homology(line) for line in khovanov_headers)
 
 
-def check_khovanov_file(path, implementation="native", verbose=True):
+def check_khovanov_file(path, implementation=None, verbose=True):
     """
     Check one generated txt file against Sage for every component orientation.
 
@@ -339,6 +345,47 @@ def check_khovanov_file(path, implementation="native", verbose=True):
     return result
 
 
+def diagnose_khovanov_file(path, mask=0, implementation=None):
+    """
+    Run one file and one orientation mask without suppressing exceptions.
+
+    This is useful when a parallel run reports many failures quickly.  The
+    printed phase markers show whether parsing, PD component traversal, Sage
+    Gauss-code construction, or Sage Khovanov computation is failing.
+    """
+    print("diagnose: parsing {}".format(path))
+    pd_code, expected = expected_homology_set_from_file(path)
+    print("diagnose: crossings={} expected_headers={}".format(len(pd_code), len(expected)))
+
+    components = components_from_pd(pd_code)
+    print(
+        "diagnose: components={} orientations={} bound={}".format(
+            len(components),
+            1 if not components else 2 ** len(components),
+            orientation_bound(len(components)),
+        )
+    )
+
+    print("diagnose: building oriented Gauss code for mask={}".format(int(mask)))
+    gauss_code = oriented_gauss_code_for_mask(pd_code, int(mask))
+    print(
+        "diagnose: gauss_components={} crossing_signs={}".format(
+            len(gauss_code[0]), len(gauss_code[1])
+        )
+    )
+
+    print("diagnose: computing Sage Khovanov homology")
+    canonical = sage_khovanov_for_orientation(pd_code, int(mask), implementation=implementation)
+    print("diagnose: computed_terms={}".format(len(canonical)))
+    return {
+        "path": path,
+        "component_count": len(components),
+        "mask": int(mask),
+        "homology": canonical,
+        "homology_text": canonical_homology_to_cppkh_text(canonical),
+    }
+
+
 def _numeric_txt_files(data_dir):
     paths = []
     for filename in os.listdir(data_dir):
@@ -380,10 +427,30 @@ def _compact_failure(item):
     return compact
 
 
+def _json_safe(value):
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, set):
+        return [_json_safe(item) for item in sorted(value, key=str)]
+    if value is None or isinstance(value, (str, bool, int, float)):
+        return value
+    try:
+        return int(value)
+    except Exception:
+        pass
+    try:
+        return float(value)
+    except Exception:
+        pass
+    return str(value)
+
+
 def _write_json_report(summary, json_report_path):
     if json_report_path is not None:
         with open(json_report_path, "w", encoding="utf-8") as fp:
-            json.dump(summary, fp, ensure_ascii=False, indent=2)
+            json.dump(_json_safe(summary), fp, ensure_ascii=False, indent=2)
 
 
 def _summary_from_failures(data_dir, implementation, checked, failures, mode, workers=None, elapsed_seconds=None):
@@ -391,19 +458,38 @@ def _summary_from_failures(data_dir, implementation, checked, failures, mode, wo
         "data_dir": data_dir,
         "implementation": implementation,
         "mode": mode,
-        "workers": workers,
-        "checked": checked,
-        "failed": len(failures),
-        "ok": len(failures) == 0,
-        "elapsed_seconds": elapsed_seconds,
+        "workers": None if workers is None else int(workers),
+        "checked": int(checked),
+        "failed": int(len(failures)),
+        "ok": bool(len(failures) == 0),
+        "elapsed_seconds": None if elapsed_seconds is None else float(elapsed_seconds),
         "failures": [_compact_failure(item) for item in failures],
     }
     return summary
 
 
+def _failure_summary_line(item):
+    if item.get("error"):
+        return item["error"]
+    return "expected={} sage_distinct={} missing={} extra={}".format(
+        item.get("expected_count"),
+        item.get("sage_distinct_count"),
+        len(item.get("missing_from_sage", [])),
+        len(item.get("extra_from_sage", [])),
+    )
+
+
+def _print_failure_sample(failures, limit=3):
+    if not failures:
+        return
+    print("First failure samples:")
+    for item in failures[:int(limit)]:
+        print("  {}: {}".format(item.get("path"), _failure_summary_line(item)))
+
+
 def check_khovanov_directory(
     data_dir,
-    implementation="native",
+    implementation=None,
     limit=None,
     start_index=None,
     end_index=None,
@@ -436,13 +522,14 @@ def check_khovanov_directory(
     summary = _summary_from_failures(
         data_dir, implementation, checked, failures, "serial", workers=1, elapsed_seconds=elapsed
     )
-    _write_json_report(summary, json_report_path)
 
     print(
         "Sage Khovanov directory check: checked={} failed={} elapsed={:.1f}s".format(
             checked, len(failures), elapsed
         )
     )
+    _print_failure_sample(failures)
+    _write_json_report(summary, json_report_path)
     return summary
 
 
@@ -491,7 +578,7 @@ def _multiprocessing_context(start_method):
 
 def check_khovanov_directory_parallel(
     data_dir,
-    implementation="native",
+    implementation=None,
     limit=None,
     start_index=None,
     end_index=None,
@@ -588,12 +675,13 @@ def check_khovanov_directory_parallel(
         workers=worker_count,
         elapsed_seconds=elapsed,
     )
-    _write_json_report(summary, json_report_path)
     print(
         "Sage Khovanov parallel check: checked={} failed={} elapsed={:.1f}s".format(
             checked, len(failures), elapsed
         )
     )
+    _print_failure_sample(failures)
+    _write_json_report(summary, json_report_path)
     return summary
 
 
