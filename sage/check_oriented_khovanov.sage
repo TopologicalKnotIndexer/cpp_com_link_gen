@@ -7,14 +7,17 @@ Load this file inside Sage:
 
 Then run, for example:
 
-    sage: check_khovanov_file("data/com_link_gen_10-v0.1.0-com_link_gen-10-3/0000001.txt")
-    sage: check_sage_membership_directory("data/com_link_gen_10-v0.1.0-com_link_gen-10-3")
-    sage: check_khovanov_directory("data/com_link_gen_10-v0.1.0-com_link_gen-10-3", limit=20)
+    sage: write_sage_pd_khovanov_directory(
+    ....:     "data/com_link_gen_10-v0.1.0-com_link_gen-10-3",
+    ....:     "sage_pd_khovanov.txt",
+    ....:     numeric_only=True,
+    ....:     workers=8,
+    ....: )
 
-The checker enumerates all 2^n component orientations.  It builds oriented
-Gauss codes explicitly, asks Sage to compute integral Khovanov homology, and
-compares the distinct results with the KHOVANOV headers written by the C++
-pipeline.
+The main export helper extracts PD_CODE from each selected txt file, lets Sage
+compute one integral Khovanov homology directly from that PD code, and writes
+ordered lines of the form ``filename： homology``.  Per-file errors are written
+as single-line ``ERROR[...]`` values in the homology field.
 """
 
 import ast
@@ -63,6 +66,16 @@ def parse_generated_khovanov_file(path):
     if not khovanov:
         raise ValueError("KHOVANOV header not found: {}".format(path))
     return pd_code, khovanov
+
+
+def parse_pd_code_from_file(path):
+    """Return only the ``PD_CODE`` header from a generated txt file."""
+    with open(path, "r", encoding="utf-8", errors="replace") as fp:
+        for line in fp:
+            pd_match = PD_HEADER_RE.match(line)
+            if pd_match:
+                return ast.literal_eval(pd_match.group(1).strip())
+    raise ValueError("PD_CODE header not found: {}".format(path))
 
 
 def parse_cppkh_homology(text):
@@ -626,6 +639,180 @@ def check_sage_membership_directory(
     return summary
 
 
+def _sage_pd_khovanov_export_worker(task):
+    index, path, label, implementation = task
+    try:
+        pd_code = parse_pd_code_from_file(path)
+        homology = sage_khovanov_for_pd(pd_code, implementation=implementation)
+        return {
+            "ok": True,
+            "index": int(index),
+            "path": path,
+            "label": label,
+            "homology": canonical_homology_to_cppkh_text(homology),
+            "error": None,
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "index": int(index),
+            "path": path,
+            "label": label,
+            "homology": _one_line_error(exc),
+            "error": _one_line_error(exc),
+            "error_type": exc.__class__.__name__,
+            "error_message": str(exc),
+            "traceback": traceback.format_exc(),
+        }
+
+
+def _one_line_error(exc):
+    text = "{}: {}".format(exc.__class__.__name__, str(exc))
+    text = " ".join(text.replace("\r", " ").replace("\n", " ").split())
+    if not text:
+        text = exc.__class__.__name__
+    return "ERROR[{}]".format(text)
+
+
+def _output_label_for_path(data_dir, path, recursive=False):
+    if recursive:
+        return os.path.relpath(path, data_dir).replace(os.sep, "/")
+    return os.path.basename(path)
+
+
+def write_sage_pd_khovanov_directory(
+    data_dir,
+    output_path,
+    implementation=None,
+    limit=None,
+    start_index=None,
+    end_index=None,
+    recursive=False,
+    numeric_only=False,
+    workers=None,
+    chunksize=1,
+    start_method=None,
+    progress_every=25,
+):
+    """
+    Compute one Sage Khovanov homology per txt file and write ordered lines.
+
+    This function does not inspect existing ``KHOVANOV`` headers and does not
+    compare results.  It extracts only ``PD_CODE`` from each selected ``.txt``
+    file, computes ``Link(pd_code).khovanov_homology(ring=ZZ)`` in parallel,
+    and writes one line per file:
+
+        filename： q^...*t^...*Z[...]
+
+    The output order is the selected file order, not worker completion order.
+    If parsing or Sage computation fails for a file, the corresponding output
+    line is still written, with the homology field replaced by a single-line
+    ``ERROR[...]`` value.
+    """
+    data_dir = str(data_dir)
+    output_path = str(output_path)
+    paths = _selected_txt_files(
+        data_dir,
+        limit=limit,
+        start_index=start_index,
+        end_index=end_index,
+        recursive=recursive,
+        numeric_only=numeric_only,
+    )
+    if not paths:
+        raise ValueError("no txt files selected under {}".format(data_dir))
+
+    worker_count = _default_worker_count(workers)
+    ctx = _multiprocessing_context(start_method)
+    tasks = [
+        (
+            index,
+            path,
+            _output_label_for_path(data_dir, path, recursive=recursive),
+            implementation,
+        )
+        for index, path in enumerate(paths)
+    ]
+
+    print(
+        "Sage PD Khovanov export starting: files={} workers={} start_method={} output={}".format(
+            len(tasks), worker_count, ctx.get_start_method(), output_path
+        )
+    )
+
+    started_at = time.time()
+    checked = 0
+    error_count = 0
+    results = [None] * len(tasks)
+    pool = ctx.Pool(processes=worker_count)
+    pool_closed = False
+    try:
+        iterator = pool.imap_unordered(
+            _sage_pd_khovanov_export_worker,
+            tasks,
+            chunksize=max(1, int(chunksize)),
+        )
+        for item in iterator:
+            checked += 1
+            results[int(item["index"])] = item
+            if item.get("error") is not None:
+                error_count += 1
+
+            if progress_every and (
+                checked == 1 or checked % int(progress_every) == 0 or checked == len(tasks)
+            ):
+                elapsed = time.time() - started_at
+                speed = checked / elapsed if elapsed > 0 else 0.0
+                print(
+                    "  computed {}/{} errors={} speed={:.2f}/s".format(
+                        checked, len(tasks), error_count, speed
+                    )
+                )
+        else:
+            pool.close()
+            pool_closed = True
+    except Exception:
+        if not pool_closed:
+            pool.terminate()
+            pool_closed = True
+        raise
+    finally:
+        if not pool_closed:
+            pool.terminate()
+        pool.join()
+
+    missing = [index for index, item in enumerate(results) if item is None]
+    if missing:
+        raise RuntimeError("missing worker result indices: {}".format(missing[:10]))
+
+    output_dir = os.path.dirname(os.path.abspath(output_path))
+    if output_dir and not os.path.isdir(output_dir):
+        os.makedirs(output_dir)
+    temp_output_path = output_path + ".tmp"
+    with open(temp_output_path, "w", encoding="utf-8", newline="\n") as fp:
+        for item in results:
+            fp.write("{}： {}\n".format(item["label"], item["homology"]))
+    os.replace(temp_output_path, output_path)
+
+    elapsed = time.time() - started_at
+    print(
+        "Sage PD Khovanov export written: files={} errors={} output={} elapsed={:.1f}s".format(
+            len(results), error_count, output_path, elapsed
+        )
+    )
+    return {
+        "data_dir": data_dir,
+        "output_path": output_path,
+        "implementation": implementation,
+        "checked": int(len(results)),
+        "errors": int(error_count),
+        "elapsed_seconds": float(elapsed),
+        "workers": int(worker_count),
+        "recursive": bool(recursive),
+        "numeric_only": bool(numeric_only),
+    }
+
+
 def _canonical_list_to_text(values, limit=None):
     values = list(values or [])
     if limit is not None:
@@ -1040,5 +1227,4 @@ def check_khovanov_directory_parallel(
 
 
 print("Loaded Sage Khovanov orientation checker.")
-print("Fast membership check: check_sage_membership_directory(..., numeric_only=True)")
-print("Full set check: check_khovanov_directory_parallel(..., workers=8)")
+print("Export Sage PD Khovanov values: write_sage_pd_khovanov_directory(..., output_path, workers=8)")

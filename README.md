@@ -150,90 +150,39 @@ and PD round trips.
 
 ## SageMath Khovanov Cross-Check
 
-There are also SageMath-only checkers using Sage's
-`Link.khovanov_homology()` implementation. The fastest validation path computes
-one Sage Khovanov homology per file and checks membership in the generated
-`KHOVANOV` set:
+The Sage helper can export one Sage-computed Khovanov homology value for every
+selected generated `.txt` file. It extracts only `PD_CODE`, lets Sage construct
+the link directly from that PD code, computes `Link(pd).khovanov_homology()`,
+and writes ordered lines of the form `filename： homology`.
 
 ```sage
 load("sage/check_oriented_khovanov.sage")
-check_sage_membership_directory(
+
+write_sage_pd_khovanov_directory(
     "data/com_link_gen_10-v0.1.0-com_link_gen-10-3",
+    "sage_pd_khovanov.txt",
     numeric_only=True,
+    workers=8,
     progress_every=25,
 )
 ```
 
-The membership checker is the fastest Sage validation path. For each selected
-`.txt` file, it extracts `PD_CODE`, lets Sage construct the link directly from
-that PD code, computes one Sage Khovanov homology, and checks that this Sage
-value is present among the file's existing `KHOVANOV` headers. It stops
-immediately on the first parse error, Sage error, or missing membership. This
-path intentionally supports only `mask=0`; it does not use the older
-PD-to-oriented-Gauss reconstruction helper.
-
-For a parallel directory sample:
+The output file keeps the selected file order, even though computation is
+parallel. If a file fails to parse or Sage fails to compute its Khovanov
+homology, that file still gets a line and the homology field is replaced by a
+single-line `ERROR[...]` value.
 
 ```sage
-summary = check_khovanov_directory_parallel(
+write_sage_pd_khovanov_directory(
     "data/com_link_gen_10-v0.1.0-com_link_gen-10-3",
-    limit=20,
-    workers=8,
-    progress_every=1,
-    failure_sample_limit=5,
-    failure_homology_limit=3,
-    failure_mask_limit=4,
-    json_report_path="sage_khovanov_report.json",
-)
-summary["ok"]
-```
-
-For a split full run, use numeric filename ranges. This is useful when checking
-the full 7000+ retained PD-code workload across several machines:
-
-```sage
-check_khovanov_directory_parallel(
-    "data/com_link_gen_10-v0.1.0-com_link_gen-10-3",
+    "sage_pd_khovanov_0001_1000.txt",
     start_index=1,
     end_index=1000,
+    numeric_only=True,
     workers=8,
     progress_every=25,
-    json_report_path="sage_khovanov_0001_1000.json",
 )
 ```
-
-The serial version is still available as `check_khovanov_directory(...)`, but
-the parallel version is recommended for real validation. It uses process-based
-parallelism, prefers the `fork` start method when Sage provides it, and checks
-one generated txt file per worker task. By default the checker uses Sage's
-default Khovanov implementation; pass `implementation=...` only when you need
-to force a specific Sage backend supported by your installed Sage version.
-
-If a parallel run reports many failures, inspect the printed failure samples or
-the `failures` entries in the JSON report. Each failure records concrete
-`reasons`, file-only Khovanov values, Sage-only Khovanov values, optional Sage
-mask results, and worker exception traceback when an exception occurs. To
-increase terminal detail, raise `failure_sample_limit`, `failure_homology_limit`,
-or `failure_traceback_lines`.
-
-Then run one file without worker exception wrapping:
-
-```sage
-diagnose_khovanov_file(
-    "data/com_link_gen_10-v0.1.0-com_link_gen-10-3/0000001.txt",
-    mask=0,
-)
-```
-
-The JSON report is normalized to plain Python JSON values, including Sage
-integer values in counters and summaries.
-
-The Sage checker intentionally enumerates all `2^n` component orientations. For
-each orientation it builds an oriented Gauss code, computes integral Khovanov
-homology in Sage, converts Sage's abelian-group output into the same canonical
-`Z[...]` form used by `cppkh`, and compares the distinct set with the
-`KHOVANOV` headers in the generated txt file. It also checks the `2^(n-1)`
-distinct-result upper bound.
 
 ## References
 
