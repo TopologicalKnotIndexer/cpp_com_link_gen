@@ -93,9 +93,37 @@ python tests/smoke_test.py
 The test uses a temporary data root and does not write generated datasets into
 the repository.
 
+## Algorithm Validation
+
+Run the stronger validation suite with:
+
+```bash
+python tests/algorithm_validation.py
+```
+
+This test intentionally does not treat the old Python implementation as the
+source of truth. It checks known Khovanov outputs for the unknot, trefoil, and
+Hopf link; independently recomputes small generation counts from the bundled
+prime-link table; validates generated PD codes as 2-regular component graphs;
+checks connected-sum crossing/component-count invariants; runs Khovanov on the
+generated sample set; and enforces the `2^(n-1)` distinct-Khovanov upper bound.
+
+For an additional mature-library cross-check, install Spherogram in the Python
+environment and require it during validation:
+
+```powershell
+conda run -n math_env python -m pip install spherogram
+conda run -n math_env python tests\algorithm_validation.py --require-spherogram
+```
+
+When Spherogram is available, the validation suite constructs independent
+Spherogram `Link` objects from generated PD codes and verifies component counts
+and PD round trips.
+
 ## References
 
 - `cppkh`: <https://github.com/GGN-2015/cppkh>
+- Spherogram link diagrams: <https://github.com/3-manifolds/Spherogram>
 - SageMath knot/link functionality and PD-code conventions:
   <https://doc.sagemath.org/html/en/reference/knots/>
 - Knot Atlas planar diagrams: <https://katlas.org/wiki/Planar_Diagrams>

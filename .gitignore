@@ -67,6 +67,8 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+__pycache__/
+*.pyc
 
 # Generated link datasets; the source prime-link table under data/ is tracked.
 data/com_link_gen_10-v*/
