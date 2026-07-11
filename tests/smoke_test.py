@@ -25,6 +25,19 @@ def run(args: list[str], cwd: Path = ROOT) -> str:
     return result.stdout
 
 
+def run_failure(args: list[str], cwd: Path = ROOT) -> str:
+    result = subprocess.run(
+        [str(EXE), *args],
+        cwd=cwd,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    assert result.returncode != 0
+    return result.stderr
+
+
 def main() -> int:
     if not EXE.is_file():
         subprocess.check_call([sys.executable, str(ROOT / "build.py")], cwd=ROOT)
@@ -33,6 +46,9 @@ def main() -> int:
     kh = run(["kh", "--pd", trefoil]).splitlines()
     assert len(kh) == 1
     assert any("q^1*t^0*Z[0]" in line for line in kh)
+    relabeled_trefoil = "[[10,40,30,60],[20,10,60,50],[40,20,50,30]]"
+    assert run(["kh", "--pd", relabeled_trefoil]).splitlines() == kh
+    assert "twice" in run_failure(["kh", "--pd", "[[1,2,3,4]]"]).lower()
 
     hopf = "[[2,3,1,4],[4,1,3,2]]"
     hopf_kh = run(["kh", "--pd", hopf]).splitlines()

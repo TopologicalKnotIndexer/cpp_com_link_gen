@@ -28,7 +28,6 @@
 #include <vector>
 
 extern "C" {
-char* cppkh_compute_pd_ex(const char* pd_code, int simplify_pd, int reorder_crossings);
 char* cppkh_compute_pd_signed_variants_ex(const char* pd_code, const char* signs_text, int reorder_crossings);
 const char* cppkh_last_error();
 void cppkh_free(char* value);
@@ -276,6 +275,22 @@ void validatePDCode(const PDCode& pd) {
     }
 }
 
+void validateContiguousPDLabels(const PDCode& pd) {
+    std::set<int> labels;
+    for (const auto& crossing : pd) {
+        for (int label : crossing) labels.insert(label);
+    }
+    int expected = static_cast<int>(labels.size());
+    if (expected != static_cast<int>(pd.size()) * 2) {
+        throw std::runtime_error("PD label count is inconsistent with crossing count");
+    }
+    for (int label = 1; label <= expected; ++label) {
+        if (!labels.count(label)) {
+            throw std::runtime_error("PD labels must be contiguous before cppkh computation");
+        }
+    }
+}
+
 int pairedPos(int pos) {
     if (pos < 0 || pos >= 4) throw std::runtime_error("invalid crossing slot");
     return (pos + 2) % 4;
@@ -448,12 +463,12 @@ NormalizeResult normalizePDCode(const PDCode& input) {
     for (auto& crossing : pd) {
         if (next.at(crossing[0]) == crossing[2]) {
             continue;
-        }
-        if (next.at(crossing[2]) == crossing[0]) {
+        } else if (next.at(crossing[2]) == crossing[0]) {
             crossing = {crossing[2], crossing[3], crossing[0], crossing[1]};
             continue;
+        } else {
+            throw std::runtime_error("crossing is inconsistent with component orientation");
         }
-        throw std::runtime_error("crossing is inconsistent with component orientation");
     }
     std::sort(pd.begin(), pd.end());
     validatePDCode(pd);
@@ -579,6 +594,34 @@ std::vector<int> baseCrossingSigns(const PDCode& pd) {
     return signs;
 }
 
+void validateCppkhOrientedNumbering(const PDCode& pd) {
+    validatePDCode(pd);
+    if (pd.empty()) return;
+    validateContiguousPDLabels(pd);
+
+    std::vector<std::vector<int>> cycles = canonicalCycles(pd);
+    auto maps = nextPrevMaps(cycles);
+    const auto& next = maps.first;
+
+    auto checkAdjacentPair = [&](int a, int b) {
+        if (next.at(a) != b && next.at(b) != a) {
+            throw std::runtime_error("PD strand endpoints are not adjacent in component orientation");
+        }
+    };
+
+    for (const auto& crossing : pd) {
+        checkAdjacentPair(crossing[0], crossing[2]);
+        checkAdjacentPair(crossing[1], crossing[3]);
+        (void)baseCrossingSign(crossing);
+    }
+}
+
+PDCode preparePDForCppkh(const PDCode& pd) {
+    PDCode normalized = normalizePDCode(pd).pd;
+    validateCppkhOrientedNumbering(normalized);
+    return normalized;
+}
+
 std::mutex& cppkhMutex() {
     static std::mutex mutex;
     return mutex;
@@ -631,13 +674,14 @@ std::string orientationSignsDocument(
 }
 
 std::string computeKhovanovSinglePD(const PDCode& pd) {
-    validatePDCode(pd);
-    std::string pdText = formatKnotTheoryPD(pd);
+    PDCode oriented = preparePDForCppkh(pd);
+    std::string pdText = formatKnotTheoryPD(oriented);
+    std::string signsText = formatCrossingSigns(baseCrossingSigns(oriented)) + "\n";
 
     std::string rawOutput;
     {
         std::lock_guard<std::mutex> lock(cppkhMutex());
-        rawOutput = takeCppkhString(cppkh_compute_pd_ex(pdText.c_str(), 1, 1));
+        rawOutput = takeCppkhString(cppkh_compute_pd_signed_variants_ex(pdText.c_str(), signsText.c_str(), 1));
     }
 
     std::vector<std::string> lines;
@@ -655,14 +699,14 @@ std::string computeKhovanovSinglePD(const PDCode& pd) {
 }
 
 std::vector<std::string> computeKhovanovAllOrientations(const PDCode& pd) {
-    validatePDCode(pd);
-    std::vector<std::vector<int>> components = componentsFromPDCode(pd);
+    PDCode oriented = preparePDForCppkh(pd);
+    std::vector<std::vector<int>> components = componentsFromPDCode(oriented);
     if (components.size() >= 63) throw std::runtime_error("too many components to enumerate orientations");
     uint64_t orientationCount = components.empty() ? 1ULL : (1ULL << components.size());
     uint64_t maxDistinct = components.empty() ? 1ULL : (1ULL << (components.size() - 1));
 
-    std::string pdText = formatKnotTheoryPD(pd);
-    std::string signsText = orientationSignsDocument(pd, components, orientationCount);
+    std::string pdText = formatKnotTheoryPD(oriented);
+    std::string signsText = orientationSignsDocument(oriented, components, orientationCount);
 
     std::string rawOutput;
     {
@@ -1082,7 +1126,7 @@ fs::path generateAllFiles(const fs::path& dataRoot, int totalCrossing, int maxPr
     std::cout << "Generating " << reps.size() << " files into " << outDir << "\n";
 
     parallelFor(reps.size(), jobs, [&](size_t i) {
-        PDCode pd = linkRepToPDCode(reps[i]);
+        PDCode pd = preparePDForCppkh(linkRepToPDCode(reps[i]));
         fs::path file = outDir / (zeroPaddedIndex(i + 1) + ".txt");
         std::ofstream out(file, std::ios::binary);
         if (!out) throw std::runtime_error("cannot write " + file.string());

@@ -141,6 +141,9 @@ point.
   For each orientation the program passes explicit crossing signs to `cppkh`,
   then removes duplicate homology strings. The final distinct count is checked
   against the `2^(n-1)` theoretical upper bound.
+- Every C++ path that calls `cppkh` first normalizes the `PD_CODE`, verifies
+  contiguous component numbering, checks that every strand pair is adjacent in
+  the component cycle, and then passes explicit crossing signs into `cppkh`.
 - Downstream clustering is implemented in C++ and does not call the old Python
   scripts. The diagram stage writes SVG files instead of the old Pillow PNG
   files so the pipeline stays self-contained and cross-platform.
