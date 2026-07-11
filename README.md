@@ -166,6 +166,9 @@ summary = check_khovanov_directory_parallel(
     limit=20,
     workers=8,
     progress_every=1,
+    failure_sample_limit=5,
+    failure_homology_limit=3,
+    failure_mask_limit=4,
     json_report_path="sage_khovanov_report.json",
 )
 summary["ok"]
@@ -192,9 +195,14 @@ one generated txt file per worker task. By default the checker uses Sage's
 default Khovanov implementation; pass `implementation=...` only when you need
 to force a specific Sage backend supported by your installed Sage version.
 
-If a parallel run reports many immediate failures, first inspect the first few
-failure samples printed by the checker or the `failures` entries in the JSON
-report. Then run one file without worker exception wrapping:
+If a parallel run reports many failures, inspect the printed failure samples or
+the `failures` entries in the JSON report. Each failure records concrete
+`reasons`, file-only Khovanov values, Sage-only Khovanov values, optional Sage
+mask results, and worker exception traceback when an exception occurs. To
+increase terminal detail, raise `failure_sample_limit`, `failure_homology_limit`,
+or `failure_traceback_lines`.
+
+Then run one file without worker exception wrapping:
 
 ```sage
 diagnose_khovanov_file(

@@ -22,6 +22,7 @@ import multiprocessing
 import os
 import re
 import time
+import traceback
 from collections import Counter, defaultdict
 
 try:
@@ -408,22 +409,87 @@ def _selected_numeric_txt_files(data_dir, limit=None, start_index=None, end_inde
     return paths
 
 
+def _canonical_list_to_text(values, limit=None):
+    values = list(values or [])
+    if limit is not None:
+        values = values[:int(limit)]
+    return [canonical_homology_to_cppkh_text(value) for value in values]
+
+
+def _failure_reasons(item):
+    reasons = []
+    if item.get("error"):
+        error_type = item.get("error_type") or "exception"
+        error_message = item.get("error_message") or item.get("error")
+        reasons.append("{}: {}".format(error_type, error_message))
+
+    expected_count = item.get("expected_count")
+    sage_distinct_count = item.get("sage_distinct_count")
+    bound = item.get("bound")
+    if expected_count is not None and sage_distinct_count is not None:
+        if int(expected_count) != int(sage_distinct_count):
+            reasons.append(
+                "distinct-count mismatch: file={} sage={}".format(
+                    int(expected_count), int(sage_distinct_count)
+                )
+            )
+
+    if bound is not None and sage_distinct_count is not None:
+        if int(sage_distinct_count) > int(bound):
+            reasons.append(
+                "Sage distinct count exceeds 2^(n-1) bound: sage={} bound={}".format(
+                    int(sage_distinct_count), int(bound)
+                )
+            )
+
+    missing_count = len(item.get("missing_from_sage", []))
+    extra_count = len(item.get("extra_from_sage", []))
+    if missing_count:
+        reasons.append(
+            "{} KHOVANOV value(s) are in the generated file but not in Sage".format(
+                missing_count
+            )
+        )
+    if extra_count:
+        reasons.append(
+            "{} Sage value(s) are missing from the generated file".format(extra_count)
+        )
+
+    if not reasons:
+        reasons.append("ok flag is false, but no detailed mismatch was recorded")
+    return reasons
+
+
+def _compact_mask_results(item, limit=None):
+    mask_results = item.get("mask_results", [])
+    if limit is not None:
+        mask_results = mask_results[:int(limit)]
+    return [
+        {
+            "mask": int(mask),
+            "homology": canonical_homology_to_cppkh_text(value),
+        }
+        for mask, value in mask_results
+    ]
+
+
 def _compact_failure(item):
     compact = {
         "path": item["path"],
-        "component_count": item["component_count"],
-        "expected_count": item["expected_count"],
-        "sage_distinct_count": item["sage_distinct_count"],
-        "bound": item["bound"],
-        "missing_from_sage": [
-            canonical_homology_to_cppkh_text(x) for x in item["missing_from_sage"]
-        ],
-        "extra_from_sage": [
-            canonical_homology_to_cppkh_text(x) for x in item["extra_from_sage"]
-        ],
+        "reasons": _failure_reasons(item),
+        "component_count": item.get("component_count"),
+        "orientation_count": item.get("orientation_count"),
+        "expected_count": item.get("expected_count"),
+        "sage_distinct_count": item.get("sage_distinct_count"),
+        "bound": item.get("bound"),
+        "missing_from_sage": _canonical_list_to_text(item.get("missing_from_sage", [])),
+        "extra_from_sage": _canonical_list_to_text(item.get("extra_from_sage", [])),
     }
-    if "error" in item:
-        compact["error"] = item["error"]
+    if item.get("mask_results"):
+        compact["sage_mask_results"] = _compact_mask_results(item)
+    for key in ("error", "error_type", "error_message", "traceback"):
+        if item.get(key):
+            compact[key] = item[key]
     return compact
 
 
@@ -469,22 +535,67 @@ def _summary_from_failures(data_dir, implementation, checked, failures, mode, wo
 
 
 def _failure_summary_line(item):
-    if item.get("error"):
-        return item["error"]
-    return "expected={} sage_distinct={} missing={} extra={}".format(
+    return "; ".join(_failure_reasons(item)) + " | counts: components={} orientations={} expected={} sage={} bound={}".format(
+        item.get("component_count"),
+        item.get("orientation_count"),
         item.get("expected_count"),
         item.get("sage_distinct_count"),
-        len(item.get("missing_from_sage", [])),
-        len(item.get("extra_from_sage", [])),
+        item.get("bound"),
     )
 
 
-def _print_failure_sample(failures, limit=3):
+def _print_text_block(label, values, limit):
+    if not values:
+        return
+    print("      {}:".format(label))
+    for text in _canonical_list_to_text(values, limit=limit):
+        print("        {}".format(text))
+    if len(values) > int(limit):
+        print("        ... {} more".format(len(values) - int(limit)))
+
+
+def _print_traceback_block(item, traceback_lines):
+    tb = item.get("traceback")
+    if not tb:
+        return
+    lines = tb.strip().splitlines()
+    print("      traceback last {} line(s):".format(int(traceback_lines)))
+    for line in lines[-int(traceback_lines):]:
+        print("        {}".format(line))
+
+
+def _print_mask_results_block(item, limit):
+    mask_results = item.get("mask_results", [])
+    if not mask_results:
+        return
+    print("      first Sage mask result(s):")
+    for entry in _compact_mask_results(item, limit=limit):
+        print("        mask={}: {}".format(entry["mask"], entry["homology"]))
+    if len(mask_results) > int(limit):
+        print("        ... {} more mask result(s)".format(len(mask_results) - int(limit)))
+
+
+def _print_failure_sample(failures, limit=3, homology_limit=2, mask_limit=4, traceback_lines=8):
     if not failures:
         return
-    print("First failure samples:")
-    for item in failures[:int(limit)]:
-        print("  {}: {}".format(item.get("path"), _failure_summary_line(item)))
+    print("First failure samples with reasons:")
+    for index, item in enumerate(failures[:int(limit)], start=1):
+        print("  [{}] {}".format(index, item.get("path")))
+        for reason in _failure_reasons(item):
+            print("      reason: {}".format(reason))
+        print(
+            "      counts: components={} orientations={} expected={} sage={} bound={}".format(
+                item.get("component_count"),
+                item.get("orientation_count"),
+                item.get("expected_count"),
+                item.get("sage_distinct_count"),
+                item.get("bound"),
+            )
+        )
+        _print_text_block("file-only KHOVANOV values", item.get("missing_from_sage", []), homology_limit)
+        _print_text_block("sage-only KHOVANOV values", item.get("extra_from_sage", []), homology_limit)
+        _print_mask_results_block(item, mask_limit)
+        _print_traceback_block(item, traceback_lines)
 
 
 def check_khovanov_directory(
@@ -496,6 +607,10 @@ def check_khovanov_directory(
     progress_every=1,
     stop_on_first_failure=False,
     json_report_path=None,
+    failure_sample_limit=3,
+    failure_homology_limit=2,
+    failure_mask_limit=4,
+    failure_traceback_lines=8,
 ):
     """
     Serial checker for generated numbered txt files in a directory.
@@ -528,7 +643,13 @@ def check_khovanov_directory(
             checked, len(failures), elapsed
         )
     )
-    _print_failure_sample(failures)
+    _print_failure_sample(
+        failures,
+        limit=failure_sample_limit,
+        homology_limit=failure_homology_limit,
+        mask_limit=failure_mask_limit,
+        traceback_lines=failure_traceback_lines,
+    )
     _write_json_report(summary, json_report_path)
     return summary
 
@@ -550,6 +671,7 @@ def _check_khovanov_worker(task):
             "result": {
                 "path": path,
                 "component_count": None,
+                "orientation_count": None,
                 "expected_count": None,
                 "sage_distinct_count": None,
                 "bound": None,
@@ -557,6 +679,9 @@ def _check_khovanov_worker(task):
                 "extra_from_sage": [],
             },
             "error": repr(exc),
+            "error_type": exc.__class__.__name__,
+            "error_message": str(exc),
+            "traceback": traceback.format_exc(),
         }
 
 
@@ -588,6 +713,10 @@ def check_khovanov_directory_parallel(
     progress_every=10,
     stop_on_first_failure=False,
     json_report_path=None,
+    failure_sample_limit=3,
+    failure_homology_limit=2,
+    failure_mask_limit=4,
+    failure_traceback_lines=8,
 ):
     """
     Process-based parallel checker for generated numbered txt files.
@@ -635,9 +764,11 @@ def check_khovanov_directory_parallel(
             checked += 1
             if not item["ok"]:
                 failure = item["result"]
-                if item["error"] is not None:
+                if item.get("error") is not None:
                     failure = dict(failure)
-                    failure["error"] = item["error"]
+                    for key in ("error", "error_type", "error_message", "traceback"):
+                        if item.get(key):
+                            failure[key] = item[key]
                 failures.append(failure)
                 if stop_on_first_failure:
                     pool.terminate()
@@ -680,7 +811,13 @@ def check_khovanov_directory_parallel(
             checked, len(failures), elapsed
         )
     )
-    _print_failure_sample(failures)
+    _print_failure_sample(
+        failures,
+        limit=failure_sample_limit,
+        homology_limit=failure_homology_limit,
+        mask_limit=failure_mask_limit,
+        traceback_lines=failure_traceback_lines,
+    )
     _write_json_report(summary, json_report_path)
     return summary
 
