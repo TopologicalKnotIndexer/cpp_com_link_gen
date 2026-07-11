@@ -24,7 +24,7 @@
 #include <vector>
 
 extern "C" {
-char* cppkh_compute_pd_batch_ex(const char* pd_codes, int simplify_pd, int reorder_crossings);
+char* cppkh_compute_pd_signed_variants_ex(const char* pd_code, const char* signs_text, int reorder_crossings);
 const char* cppkh_last_error();
 void cppkh_free(char* value);
 }
@@ -440,24 +440,6 @@ ConnectedSumResult connectedSum(const PDCode& aInput, const PDCode& bInput, int 
     return result;
 }
 
-PDCode reverseComponentsByMask(const PDCode& pd, uint64_t mask) {
-    validatePDCode(pd);
-    std::vector<std::vector<int>> cycles = canonicalCycles(pd);
-    std::unordered_map<int, int> mapping;
-    for (size_t i = 0; i < cycles.size(); ++i) {
-        const auto& cycle = cycles[i];
-        bool reverse = ((mask >> i) & 1ULL) != 0;
-        for (size_t j = 0; j < cycle.size(); ++j) {
-            mapping[cycle[j]] = reverse ? cycle[cycle.size() - 1 - j] : cycle[j];
-        }
-    }
-    PDCode out = pd;
-    for (auto& crossing : out) {
-        for (int& label : crossing) label = mapping.at(label);
-    }
-    return out;
-}
-
 std::string takeCppkhString(char* raw) {
     if (!raw) {
         const char* err = cppkh_last_error();
@@ -479,23 +461,82 @@ std::vector<std::string> splitLines(const std::string& text) {
     return lines;
 }
 
+int baseCrossingSign(const Crossing& crossing) {
+    int b = crossing[1];
+    int d = crossing[3];
+    if (b - d == 1 || d - b > 1) return 1;
+    if (d - b == 1 || b - d > 1) return -1;
+    throw std::runtime_error("error finding crossing sign");
+}
+
+std::vector<int> baseCrossingSigns(const PDCode& pd) {
+    std::vector<int> signs;
+    signs.reserve(pd.size());
+    for (const auto& crossing : pd) signs.push_back(baseCrossingSign(crossing));
+    return signs;
+}
+
+std::unordered_map<int, size_t> labelComponentIndex(const std::vector<std::vector<int>>& components) {
+    std::unordered_map<int, size_t> index;
+    for (size_t i = 0; i < components.size(); ++i) {
+        for (int label : components[i]) index[label] = i;
+    }
+    return index;
+}
+
+std::string formatCrossingSigns(const std::vector<int>& signs) {
+    if (signs.empty()) return "[]";
+    std::ostringstream out;
+    for (size_t i = 0; i < signs.size(); ++i) {
+        if (i) out << ' ';
+        out << signs[i];
+    }
+    return out.str();
+}
+
+std::string orientationSignsDocument(
+    const PDCode& pd,
+    const std::vector<std::vector<int>>& components,
+    uint64_t orientationCount) {
+    std::vector<int> baseSigns = baseCrossingSigns(pd);
+    std::unordered_map<int, size_t> componentOf = labelComponentIndex(components);
+    std::ostringstream document;
+
+    for (uint64_t mask = 0; mask < orientationCount; ++mask) {
+        std::vector<int> signs = baseSigns;
+        for (size_t i = 0; i < pd.size(); ++i) {
+            const auto& crossing = pd[i];
+            size_t strandA = componentOf.at(crossing[0]);
+            size_t strandAPaired = componentOf.at(crossing[2]);
+            size_t strandB = componentOf.at(crossing[1]);
+            size_t strandBPaired = componentOf.at(crossing[3]);
+            if (strandA != strandAPaired || strandB != strandBPaired) {
+                throw std::runtime_error("crossing strands are inconsistent with components");
+            }
+            bool reverseA = ((mask >> strandA) & 1ULL) != 0;
+            bool reverseB = ((mask >> strandB) & 1ULL) != 0;
+            if (strandA != strandB && reverseA != reverseB) signs[i] = -signs[i];
+        }
+        document << formatCrossingSigns(signs) << "\n";
+    }
+    return document.str();
+}
+
 std::vector<std::string> computeKhovanovAllOrientations(const PDCode& pd) {
     validatePDCode(pd);
     std::vector<std::vector<int>> components = componentsFromPDCode(pd);
     if (components.size() >= 63) throw std::runtime_error("too many components to enumerate orientations");
+    uint64_t orientationCount = components.empty() ? 1ULL : (1ULL << components.size());
     uint64_t maxDistinct = components.empty() ? 1ULL : (1ULL << (components.size() - 1));
 
-    std::ostringstream document;
-    for (uint64_t representative = 0; representative < maxDistinct; ++representative) {
-        uint64_t mask = representative << 1; // Fix component 0; global reversal gives the same orientation class.
-        document << formatKnotTheoryPD(reverseComponentsByMask(pd, mask)) << "\n";
-    }
+    std::string pdText = formatKnotTheoryPD(pd);
+    std::string signsText = orientationSignsDocument(pd, components, orientationCount);
 
     static std::mutex cppkhMutex;
     std::string rawOutput;
     {
         std::lock_guard<std::mutex> lock(cppkhMutex);
-        rawOutput = takeCppkhString(cppkh_compute_pd_batch_ex(document.str().c_str(), 1, 1));
+        rawOutput = takeCppkhString(cppkh_compute_pd_signed_variants_ex(pdText.c_str(), signsText.c_str(), 1));
     }
 
     std::set<std::string> unique;

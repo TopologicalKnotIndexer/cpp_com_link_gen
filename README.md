@@ -79,10 +79,10 @@ point.
   them before canonical renumbering. This avoids the old local-crossing
   replacement bug-prone path and keeps merged-cluster component representatives
   updated for the whole cluster.
-- Component orientation enumeration is done modulo global reversal: for `n`
-  components, the first component is fixed and `2^(n-1)` direction classes are
-  computed with `cppkh`. Duplicate homology strings are removed, and the result
-  is checked to ensure it never exceeds the `2^(n-1)` theoretical bound.
+- Component orientation enumeration computes all `2^n` component orientations.
+  For each orientation the program passes explicit crossing signs to `cppkh`,
+  then removes duplicate homology strings. The final distinct count is checked
+  against the `2^(n-1)` theoretical upper bound.
 
 ## Smoke Test
 

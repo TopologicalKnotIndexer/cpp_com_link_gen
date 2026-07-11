@@ -34,6 +34,10 @@ def main() -> int:
     assert len(kh) == 1
     assert any("q^1*t^0*Z[0]" in line for line in kh)
 
+    hopf = "[[2,3,1,4],[4,1,3,2]]"
+    hopf_kh = run(["kh", "--pd", hopf]).splitlines()
+    assert len(hopf_kh) == 2
+
     with tempfile.TemporaryDirectory(prefix="cpp_com_link_gen_test_") as tmp:
         tmp_path = Path(tmp)
         data_root = tmp_path / "data"
