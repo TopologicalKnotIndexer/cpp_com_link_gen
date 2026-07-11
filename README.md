@@ -148,6 +148,55 @@ When Spherogram is available, the validation suite constructs independent
 Spherogram `Link` objects from generated PD codes and verifies component counts
 and PD round trips.
 
+## SageMath Khovanov Cross-Check
+
+There is also a SageMath-only checker for recomputing every component
+orientation with Sage's `Link.khovanov_homology()` implementation:
+
+```sage
+load("sage/check_oriented_khovanov.sage")
+check_khovanov_file("data/com_link_gen_10-v0.1.0-com_link_gen-10-3/0000001.txt")
+```
+
+For a parallel directory sample:
+
+```sage
+summary = check_khovanov_directory_parallel(
+    "data/com_link_gen_10-v0.1.0-com_link_gen-10-3",
+    limit=20,
+    workers=8,
+    progress_every=1,
+    json_report_path="sage_khovanov_report.json",
+)
+summary["ok"]
+```
+
+For a split full run, use numeric filename ranges. This is useful when checking
+the full 7000+ retained PD-code workload across several machines:
+
+```sage
+check_khovanov_directory_parallel(
+    "data/com_link_gen_10-v0.1.0-com_link_gen-10-3",
+    start_index=1,
+    end_index=1000,
+    workers=8,
+    progress_every=25,
+    json_report_path="sage_khovanov_0001_1000.json",
+)
+```
+
+The serial version is still available as `check_khovanov_directory(...)`, but
+the parallel version is recommended for real validation. It uses process-based
+parallelism, prefers the `fork` start method when Sage provides it, and checks
+one generated txt file per worker task.
+
+The Sage checker intentionally enumerates all `2^n` component orientations. For
+each orientation it builds an oriented Gauss code, computes integral Khovanov
+homology in Sage, converts Sage's abelian-group output into the same canonical
+`Z[...]` form used by `cppkh`, and compares the distinct set with the
+`KHOVANOV` headers in the generated txt file. It also checks the `2^(n-1)`
+distinct-result upper bound.
+
 ## References
 
 - `cppkh`: <https://github.com/GGN-2015/cppkh>
