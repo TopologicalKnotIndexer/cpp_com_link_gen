@@ -165,11 +165,12 @@ check_sage_membership_directory(
 ```
 
 The membership checker is the fastest Sage validation path. For each selected
-`.txt` file, it extracts `PD_CODE`, computes one Sage Khovanov homology for
-`mask=0`, and checks that this Sage value is present among the file's existing
-`KHOVANOV` headers. It stops immediately on the first parse error, Sage error,
-or missing membership. Use `mask=...` to check a different component-orientation
-mask.
+`.txt` file, it extracts `PD_CODE`, lets Sage construct the link directly from
+that PD code, computes one Sage Khovanov homology, and checks that this Sage
+value is present among the file's existing `KHOVANOV` headers. It stops
+immediately on the first parse error, Sage error, or missing membership. This
+path intentionally supports only `mask=0`; it does not use the older
+PD-to-oriented-Gauss reconstruction helper.
 
 For a parallel directory sample:
 

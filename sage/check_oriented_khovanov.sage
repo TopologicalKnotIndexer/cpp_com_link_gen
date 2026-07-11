@@ -261,6 +261,13 @@ def _sage_khovanov_homology(link, implementation=None):
     return link.khovanov_homology(ring=ZZ, implementation=implementation)
 
 
+def sage_khovanov_for_pd(pd_code, implementation=None):
+    """Compute canonical Sage Khovanov homology directly from a PD code."""
+    link = Link(pd_code)
+    homology = _sage_khovanov_homology(link, implementation=implementation)
+    return sage_homology_to_canonical(homology)
+
+
 def sage_homology_to_canonical(homology):
     """Convert Sage's nested Khovanov dictionary to a canonical tuple."""
     terms = []
@@ -359,22 +366,27 @@ def check_sage_membership_file(path, mask=0, implementation=None, verbose=True, 
     Compute one Sage Khovanov homology and check membership in file headers.
 
     This is a deliberately weaker but faster validation than
-    ``check_khovanov_file``.  It verifies that the Sage result for one explicit
-    component-orientation mask appears among the generated ``KHOVANOV`` values.
-    Any parse error or Sage error is allowed to propagate.
+    ``check_khovanov_file``.  It asks Sage to construct the link directly from
+    the file's ``PD_CODE`` and verifies that Sage's result appears among the
+    generated ``KHOVANOV`` values.  Any parse error or Sage error is allowed to
+    propagate.
+
+    Only ``mask=0`` is supported here.  The older ``oriented_gauss_code_for_mask``
+    helper is intentionally not used for this check, because reconstructing a
+    Sage oriented Gauss code from a PD code is convention-sensitive and can
+    create a different diagram than the original PD code.
     """
+    mask = int(mask)
+    if mask != 0:
+        raise NotImplementedError(
+            "check_sage_membership_file currently supports only mask=0; "
+            "it validates Sage's direct PD-code result against the generated KHOVANOV set"
+        )
     pd_code, expected = expected_homology_set_from_file(path)
     components = components_from_pd(pd_code)
     orientation_count = 1 if not components else 2 ** len(components)
-    mask = int(mask)
-    if mask < 0 or mask >= orientation_count:
-        raise ValueError(
-            "mask {} is out of range for {} component(s); valid range is [0, {})".format(
-                mask, len(components), orientation_count
-            )
-        )
 
-    sage_value = sage_khovanov_for_orientation(pd_code, mask, implementation=implementation)
+    sage_value = sage_khovanov_for_pd(pd_code, implementation=implementation)
     ok = sage_value in expected
     result = {
         "path": path,
@@ -542,10 +554,11 @@ def check_sage_membership_directory(
     """
     Check every selected txt file by one Sage Khovanov membership test.
 
-    For each file, this extracts ``PD_CODE``, computes Sage Khovanov homology
-    for one component-orientation mask, and checks that this value is present
-    in the file's existing ``KHOVANOV`` headers.  The function stops
-    immediately on the first parse error, Sage error, or membership failure.
+    For each file, this extracts ``PD_CODE``, lets Sage build the link directly
+    from that PD code, computes one Sage Khovanov homology, and checks that this
+    value is present in the file's existing ``KHOVANOV`` headers.  The function
+    stops immediately on the first parse error, Sage error, or membership
+    failure.  Only ``mask=0`` is supported.
     """
     paths = _selected_txt_files(
         data_dir,
