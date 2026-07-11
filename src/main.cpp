@@ -3,10 +3,14 @@
 #include <atomic>
 #include <cctype>
 #include <condition_variable>
+#include <cmath>
+#include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iomanip>
 #include <iostream>
 #include <map>
 #include <mutex>
@@ -79,6 +83,104 @@ std::string trim(const std::string& s) {
 bool startsWith(const std::string& value, const std::string& prefix) {
     return value.size() >= prefix.size() &&
            std::equal(prefix.begin(), prefix.end(), value.begin());
+}
+
+uint32_t leftRotate(uint32_t value, uint32_t amount) {
+    return (value << amount) | (value >> (32U - amount));
+}
+
+std::string md5Hex(const std::string& input) {
+    static const uint32_t shifts[64] = {
+        7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
+        5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
+        4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
+        6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
+    };
+    static const uint32_t constants[64] = {
+        0xd76aa478U, 0xe8c7b756U, 0x242070dbU, 0xc1bdceeeU,
+        0xf57c0fafU, 0x4787c62aU, 0xa8304613U, 0xfd469501U,
+        0x698098d8U, 0x8b44f7afU, 0xffff5bb1U, 0x895cd7beU,
+        0x6b901122U, 0xfd987193U, 0xa679438eU, 0x49b40821U,
+        0xf61e2562U, 0xc040b340U, 0x265e5a51U, 0xe9b6c7aaU,
+        0xd62f105dU, 0x02441453U, 0xd8a1e681U, 0xe7d3fbc8U,
+        0x21e1cde6U, 0xc33707d6U, 0xf4d50d87U, 0x455a14edU,
+        0xa9e3e905U, 0xfcefa3f8U, 0x676f02d9U, 0x8d2a4c8aU,
+        0xfffa3942U, 0x8771f681U, 0x6d9d6122U, 0xfde5380cU,
+        0xa4beea44U, 0x4bdecfa9U, 0xf6bb4b60U, 0xbebfbc70U,
+        0x289b7ec6U, 0xeaa127faU, 0xd4ef3085U, 0x04881d05U,
+        0xd9d4d039U, 0xe6db99e5U, 0x1fa27cf8U, 0xc4ac5665U,
+        0xf4292244U, 0x432aff97U, 0xab9423a7U, 0xfc93a039U,
+        0x655b59c3U, 0x8f0ccc92U, 0xffeff47dU, 0x85845dd1U,
+        0x6fa87e4fU, 0xfe2ce6e0U, 0xa3014314U, 0x4e0811a1U,
+        0xf7537e82U, 0xbd3af235U, 0x2ad7d2bbU, 0xeb86d391U,
+    };
+
+    std::vector<uint8_t> message(input.begin(), input.end());
+    uint64_t bitLength = static_cast<uint64_t>(message.size()) * 8U;
+    message.push_back(0x80U);
+    while ((message.size() % 64U) != 56U) message.push_back(0U);
+    for (int i = 0; i < 8; ++i) {
+        message.push_back(static_cast<uint8_t>((bitLength >> (8 * i)) & 0xffU));
+    }
+
+    uint32_t a0 = 0x67452301U;
+    uint32_t b0 = 0xefcdab89U;
+    uint32_t c0 = 0x98badcfeU;
+    uint32_t d0 = 0x10325476U;
+
+    for (size_t offset = 0; offset < message.size(); offset += 64) {
+        uint32_t words[16];
+        for (int i = 0; i < 16; ++i) {
+            size_t j = offset + static_cast<size_t>(i) * 4U;
+            words[i] = static_cast<uint32_t>(message[j]) |
+                       (static_cast<uint32_t>(message[j + 1]) << 8U) |
+                       (static_cast<uint32_t>(message[j + 2]) << 16U) |
+                       (static_cast<uint32_t>(message[j + 3]) << 24U);
+        }
+
+        uint32_t a = a0;
+        uint32_t b = b0;
+        uint32_t c = c0;
+        uint32_t d = d0;
+
+        for (uint32_t i = 0; i < 64; ++i) {
+            uint32_t f = 0;
+            uint32_t g = 0;
+            if (i < 16) {
+                f = (b & c) | ((~b) & d);
+                g = i;
+            } else if (i < 32) {
+                f = (d & b) | ((~d) & c);
+                g = (5U * i + 1U) % 16U;
+            } else if (i < 48) {
+                f = b ^ c ^ d;
+                g = (3U * i + 5U) % 16U;
+            } else {
+                f = c ^ (b | (~d));
+                g = (7U * i) % 16U;
+            }
+
+            uint32_t temp = d;
+            d = c;
+            c = b;
+            b = b + leftRotate(a + f + constants[i] + words[g], shifts[i]);
+            a = temp;
+        }
+
+        a0 += a;
+        b0 += b;
+        c0 += c;
+        d0 += d;
+    }
+
+    std::ostringstream out;
+    out << std::hex << std::setfill('0');
+    for (uint32_t value : {a0, b0, c0, d0}) {
+        for (int i = 0; i < 4; ++i) {
+            out << std::setw(2) << ((value >> (8 * i)) & 0xffU);
+        }
+    }
+    return out.str();
 }
 
 std::vector<int> parseIntegers(const std::string& text) {
@@ -995,6 +1097,334 @@ void writeFile(const fs::path& path, const std::string& content) {
     out << content;
 }
 
+bool hasTxtExtension(const fs::path& path) {
+    std::string ext = path.extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return ext == ".txt";
+}
+
+std::vector<fs::path> sortedTxtFiles(const fs::path& dir) {
+    if (!fs::is_directory(dir)) throw std::runtime_error("not a directory: " + dir.string());
+    std::vector<fs::path> files;
+    for (const auto& entry : fs::directory_iterator(dir)) {
+        if (entry.is_regular_file() && hasTxtExtension(entry.path())) files.push_back(entry.path());
+    }
+    std::sort(files.begin(), files.end());
+    return files;
+}
+
+std::vector<fs::path> sortedClusterLinkFiles(const fs::path& clusterDir) {
+    if (!fs::is_directory(clusterDir)) throw std::runtime_error("not a directory: " + clusterDir.string());
+    std::vector<fs::path> files;
+    for (const auto& entry : fs::recursive_directory_iterator(clusterDir)) {
+        if (!entry.is_regular_file() || !hasTxtExtension(entry.path())) continue;
+        if (entry.path().filename() == "khovanov.txt") continue;
+        files.push_back(entry.path());
+    }
+    std::sort(files.begin(), files.end());
+    return files;
+}
+
+std::string removeAsciiSpaces(std::string value) {
+    value.erase(std::remove(value.begin(), value.end(), ' '), value.end());
+    return value;
+}
+
+std::string khovanovKeyFromContent(const std::string& content, const fs::path& source) {
+    std::vector<std::string> lines;
+    std::istringstream in(content);
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.find("KHOVANOV") == std::string::npos) continue;
+        size_t colon = line.find(':');
+        if (colon == std::string::npos) throw std::runtime_error("bad KHOVANOV line in " + source.string());
+        lines.push_back(trim(line.substr(colon + 1)));
+    }
+    if (lines.empty()) throw std::runtime_error("KHOVANOV header not found in " + source.string());
+    std::sort(lines.begin(), lines.end());
+
+    std::ostringstream out;
+    for (size_t i = 0; i < lines.size(); ++i) {
+        if (i) out << "#";
+        out << lines[i];
+    }
+    return removeAsciiSpaces(out.str());
+}
+
+std::string pdCodeKeyFromContent(const std::string& content, const fs::path& source) {
+    std::istringstream in(content);
+    std::string line;
+    while (std::getline(in, line)) {
+        size_t marker = line.find("PD_CODE:");
+        if (marker == std::string::npos) continue;
+        return formatPDCode(parsePDCode(line.substr(marker + 8)));
+    }
+    throw std::runtime_error("PD_CODE header not found in " + source.string());
+}
+
+std::string khovanovTextFromKey(std::string key) {
+    std::replace(key.begin(), key.end(), '#', '\n');
+    if (!key.empty() && key.back() != '\n') key.push_back('\n');
+    return key;
+}
+
+fs::path defaultClusterDirForDataDir(const fs::path& dataDir) {
+    fs::path parent = dataDir.has_parent_path() ? dataDir.parent_path() : fs::current_path();
+    return parent / "cluster";
+}
+
+fs::path defaultReClusterDirForClusterDir(const fs::path& clusterDir) {
+    fs::path parent = clusterDir.has_parent_path() ? clusterDir.parent_path() : fs::current_path();
+    return parent / "re_cluster";
+}
+
+struct ClusterSummary {
+    size_t inputFiles = 0;
+    size_t uniquePd = 0;
+    size_t ignoredDuplicatePd = 0;
+    size_t khovanovClasses = 0;
+    std::map<int, int> classSizeHistogram;
+};
+
+void printHistogram(const std::map<int, int>& histogram) {
+    std::cout << "{";
+    bool first = true;
+    for (const auto& item : histogram) {
+        if (!first) std::cout << ", ";
+        first = false;
+        std::cout << item.first << ": " << item.second;
+    }
+    std::cout << "}\n";
+}
+
+ClusterSummary classifyByKhovanov(const fs::path& dataDir, const fs::path& clusterDir, bool dryRun) {
+    std::vector<fs::path> files = sortedTxtFiles(dataDir);
+    if (!dryRun) {
+        if (fs::exists(clusterDir)) fs::remove_all(clusterDir);
+        fs::create_directories(clusterDir);
+    }
+
+    std::map<std::string, std::vector<fs::path>> khovanovToFiles;
+    std::unordered_map<std::string, std::string> pdToKhovanov;
+    ClusterSummary summary;
+    summary.inputFiles = files.size();
+
+    for (const fs::path& file : files) {
+        std::string content = readFile(file);
+        std::string khovanov = khovanovKeyFromContent(content, file);
+        std::string pdCode = pdCodeKeyFromContent(content, file);
+
+        auto [it, inserted] = pdToKhovanov.emplace(pdCode, khovanov);
+        if (!inserted) {
+            if (it->second != khovanov) {
+                throw std::runtime_error("same PD_CODE has different Khovanov values: " + file.string());
+            }
+            ++summary.ignoredDuplicatePd;
+            continue;
+        }
+
+        khovanovToFiles[khovanov].push_back(file);
+        if (!dryRun) {
+            fs::path folder = clusterDir / md5Hex(khovanov);
+            fs::create_directories(folder);
+            writeFile(folder / "khovanov.txt", khovanovTextFromKey(khovanov));
+            fs::copy_file(file, folder / file.filename(), fs::copy_options::overwrite_existing);
+        }
+    }
+
+    summary.uniquePd = pdToKhovanov.size();
+    summary.khovanovClasses = khovanovToFiles.size();
+    for (const auto& item : khovanovToFiles) {
+        ++summary.classSizeHistogram[static_cast<int>(item.second.size())];
+    }
+
+    std::cout << "cluster_dir: " << clusterDir << "\n";
+    printHistogram(summary.classSizeHistogram);
+    std::cout << "ignore_pd_code: " << summary.ignoredDuplicatePd << "\n";
+    std::cout << "unique_pd_code: " << summary.uniquePd << "\n";
+    std::cout << "khovanov_classes: " << summary.khovanovClasses << "\n";
+    return summary;
+}
+
+std::string xmlEscape(const std::string& text) {
+    std::string out;
+    for (char ch : text) {
+        switch (ch) {
+            case '&': out += "&amp;"; break;
+            case '<': out += "&lt;"; break;
+            case '>': out += "&gt;"; break;
+            case '"': out += "&quot;"; break;
+            case '\'': out += "&apos;"; break;
+            default: out.push_back(ch); break;
+        }
+    }
+    return out;
+}
+
+struct SvgPoint {
+    double x = 0;
+    double y = 0;
+};
+
+std::string svgNumber(double value) {
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(1) << value;
+    return out.str();
+}
+
+std::string crossingSignText(const Crossing& crossing) {
+    return baseCrossingSign(crossing) > 0 ? "+" : "-";
+}
+
+std::string renderPDCodeSvg(const PDCode& pd, const std::string& title) {
+    validatePDCode(pd);
+    std::vector<std::vector<int>> cycles = canonicalCycles(pd);
+    const double pi = std::acos(-1.0);
+    const int cellW = 300;
+    const int cellH = 260;
+    const int cols = cycles.size() <= 1 ? 1 : 2;
+    const int rows = std::max<int>(1, static_cast<int>((cycles.size() + cols - 1) / cols));
+    const int tableW = 380;
+    const int width = cols * cellW + tableW + 60;
+    const int height = std::max(260, rows * cellH + 60);
+
+    std::ostringstream svg;
+    svg << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
+    svg << "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"" << width
+        << "\" height=\"" << height << "\" viewBox=\"0 0 " << width << " " << height << "\">\n";
+    svg << "<rect width=\"100%\" height=\"100%\" fill=\"white\"/>\n";
+    svg << "<style>text{font-family:Arial,DejaVu Sans,sans-serif;font-size:13px}"
+        << ".small{font-size:11px}.title{font-size:16px;font-weight:bold}"
+        << ".strand{fill:none;stroke:#111;stroke-width:3;stroke-linejoin:round}"
+        << ".socket{fill:#fff;stroke:#b00020;stroke-width:1.5}</style>\n";
+    svg << "<text class=\"title\" x=\"20\" y=\"28\">" << xmlEscape(title) << "</text>\n";
+
+    if (cycles.empty()) {
+        svg << "<circle cx=\"130\" cy=\"135\" r=\"70\" fill=\"none\" stroke=\"#111\" stroke-width=\"3\"/>\n";
+        svg << "<text x=\"88\" y=\"140\">unknot / empty PD</text>\n";
+    }
+
+    for (size_t c = 0; c < cycles.size(); ++c) {
+        int gridX = static_cast<int>(c % cols);
+        int gridY = static_cast<int>(c / cols);
+        double ox = 30 + gridX * cellW;
+        double oy = 50 + gridY * cellH;
+        double cx = ox + cellW / 2.0;
+        double cy = oy + cellH / 2.0;
+        double rx = 95;
+        double ry = 75;
+        const auto& cycle = cycles[c];
+        std::vector<SvgPoint> points;
+        points.reserve(cycle.size());
+        for (size_t i = 0; i < cycle.size(); ++i) {
+            double angle = -pi / 2.0 + 2.0 * pi * static_cast<double>(i) / std::max<size_t>(1, cycle.size());
+            points.push_back({cx + rx * std::cos(angle), cy + ry * std::sin(angle)});
+        }
+
+        svg << "<text x=\"" << svgNumber(ox + 8) << "\" y=\"" << svgNumber(oy + 20)
+            << "\">component " << (c + 1) << "</text>\n";
+        if (points.size() == 1) {
+            svg << "<circle class=\"strand\" cx=\"" << svgNumber(points[0].x)
+                << "\" cy=\"" << svgNumber(points[0].y) << "\" r=\"45\"/>\n";
+        } else if (!points.empty()) {
+            svg << "<polyline class=\"strand\" points=\"";
+            for (const SvgPoint& p : points) svg << svgNumber(p.x) << "," << svgNumber(p.y) << " ";
+            svg << svgNumber(points[0].x) << "," << svgNumber(points[0].y) << "\"/>\n";
+        }
+
+        for (size_t i = 0; i < points.size(); ++i) {
+            const SvgPoint& p = points[i];
+            svg << "<circle class=\"socket\" cx=\"" << svgNumber(p.x) << "\" cy=\""
+                << svgNumber(p.y) << "\" r=\"9\"/>\n";
+            svg << "<text class=\"small\" text-anchor=\"middle\" x=\"" << svgNumber(p.x)
+                << "\" y=\"" << svgNumber(p.y + 4) << "\">" << cycle[i] << "</text>\n";
+        }
+    }
+
+    int tableX = cols * cellW + 35;
+    svg << "<text class=\"title\" x=\"" << tableX << "\" y=\"58\">PD crossings</text>\n";
+    int y = 82;
+    for (size_t i = 0; i < pd.size(); ++i) {
+        svg << "<text x=\"" << tableX << "\" y=\"" << y << "\">X" << (i + 1)
+            << " (" << crossingSignText(pd[i]) << ") = ["
+            << pd[i][0] << ", " << pd[i][1] << ", " << pd[i][2] << ", " << pd[i][3] << "]</text>\n";
+        y += 20;
+    }
+    svg << "</svg>\n";
+    return svg.str();
+}
+
+void generateDiagramSvgForFile(const fs::path& txtPath, bool force) {
+    fs::path outPath = txtPath;
+    outPath.replace_extension(".svg");
+    if (fs::exists(outPath) && !force) return;
+
+    std::string content = readFile(txtPath);
+    PDCode pd = parsePDCode(pdCodeKeyFromContent(content, txtPath));
+    writeFile(outPath, renderPDCodeSvg(pd, txtPath.filename().string()));
+}
+
+size_t generateClusterDiagrams(const fs::path& clusterDir, int jobs, bool force) {
+    std::vector<fs::path> files = sortedClusterLinkFiles(clusterDir);
+    parallelFor(files.size(), jobs, [&](size_t i) {
+        generateDiagramSvgForFile(files[i], force);
+    });
+    std::cout << "diagram_svg: " << files.size() << "\n";
+    return files.size();
+}
+
+int countClusterLinkFiles(const fs::path& dir) {
+    if (!fs::is_directory(dir)) throw std::runtime_error("not a directory: " + dir.string());
+    int count = 0;
+    for (const auto& entry : fs::directory_iterator(dir)) {
+        if (!entry.is_regular_file() || !hasTxtExtension(entry.path())) continue;
+        if (entry.path().filename() == "khovanov.txt") continue;
+        ++count;
+    }
+    return count;
+}
+
+std::map<int, int> reClusterByClassSize(const fs::path& clusterDir, const fs::path& outDir) {
+    if (!fs::is_directory(clusterDir)) throw std::runtime_error("not a directory: " + clusterDir.string());
+    if (fs::exists(outDir)) fs::remove_all(outDir);
+    fs::create_directories(outDir);
+
+    std::map<int, int> histogram;
+    std::vector<fs::path> folders;
+    for (const auto& entry : fs::directory_iterator(clusterDir)) {
+        if (entry.is_directory()) folders.push_back(entry.path());
+    }
+    std::sort(folders.begin(), folders.end());
+
+    for (const fs::path& folder : folders) {
+        int linkCount = countClusterLinkFiles(folder);
+        ++histogram[linkCount];
+        std::ostringstream bucketName;
+        bucketName << std::setw(3) << std::setfill('0') << linkCount;
+        fs::path bucket = outDir / bucketName.str();
+        fs::create_directories(bucket);
+        fs::copy(folder, bucket / folder.filename(),
+                 fs::copy_options::recursive | fs::copy_options::overwrite_existing);
+    }
+
+    std::cout << "re_cluster_dir: " << outDir << "\n";
+    printHistogram(histogram);
+    return histogram;
+}
+
+void runPostprocess(const fs::path& dataDir,
+                    const fs::path& clusterDir,
+                    const fs::path& reClusterDir,
+                    int jobs,
+                    bool diagrams,
+                    bool forceDiagrams) {
+    classifyByKhovanov(dataDir, clusterDir, false);
+    if (diagrams) generateClusterDiagrams(clusterDir, jobs, forceDiagrams);
+    reClusterByClassSize(clusterDir, reClusterDir);
+}
+
 void processOneFile(const fs::path& file) {
     if (!fs::is_regular_file(file)) throw std::runtime_error("not a file: " + file.string());
     std::string oldContent = readFile(file);
@@ -1060,11 +1490,22 @@ fs::path optionPath(std::vector<std::string>& args, const std::string& name, con
     return value ? fs::path(*value) : fallback;
 }
 
+bool takeFlag(std::vector<std::string>& args, const std::string& name) {
+    auto it = std::find(args.begin(), args.end(), name);
+    if (it == args.end()) return false;
+    args.erase(it);
+    return true;
+}
+
 void usage() {
     std::cout
         << "Usage:\n"
         << "  cpp_com_link_gen generate --total-crs 10 --max-prime-cnt 3 --jobs 8 [--data-root data]\n"
         << "  cpp_com_link_gen khovanov --dir DIR --jobs 8\n"
+        << "  cpp_com_link_gen postprocess --dir DIR --jobs 8 [--cluster-dir DIR] [--re-cluster-dir DIR] [--no-diagrams]\n"
+        << "  cpp_com_link_gen classify --dir DIR [--cluster-dir DIR] [--dry-run]\n"
+        << "  cpp_com_link_gen diagrams --cluster-dir DIR --jobs 8 [--force]\n"
+        << "  cpp_com_link_gen re-cluster --cluster-dir DIR [--out-dir DIR]\n"
         << "  cpp_com_link_gen all --total-crs 10 --max-prime-cnt 3 --jobs 8 [--data-root data]\n"
         << "  cpp_com_link_gen default --jobs 8 [--total-crs 10 --max-prime-cnt 3]\n"
         << "  cpp_com_link_gen process-one FILE\n"
@@ -1100,6 +1541,30 @@ int runCommand(std::vector<std::string> args) {
         fs::path dir = optionPath(args, "--dir", generatedDir(dataRoot, 10, 3));
         int jobs = optionInt(args, "--jobs", 1);
         processKhovanovParallel(dir, jobs);
+    } else if (command == "postprocess") {
+        fs::path dir = optionPath(args, "--dir", generatedDir(dataRoot, 10, 3));
+        int jobs = optionInt(args, "--jobs", 1);
+        fs::path clusterDir = optionPath(args, "--cluster-dir", defaultClusterDirForDataDir(dir));
+        fs::path reClusterDir = optionPath(args, "--re-cluster-dir", defaultReClusterDirForClusterDir(clusterDir));
+        bool noDiagrams = takeFlag(args, "--no-diagrams");
+        bool forceDiagrams = takeFlag(args, "--force-diagrams") || takeFlag(args, "--force");
+        runPostprocess(dir, clusterDir, reClusterDir, jobs, !noDiagrams, forceDiagrams);
+    } else if (command == "classify") {
+        fs::path dir = optionPath(args, "--dir", generatedDir(dataRoot, 10, 3));
+        fs::path clusterDir = optionPath(args, "--cluster-dir", defaultClusterDirForDataDir(dir));
+        bool dryRun = takeFlag(args, "--dry-run");
+        classifyByKhovanov(dir, clusterDir, dryRun);
+    } else if (command == "diagrams") {
+        fs::path clusterDir = optionPath(
+            args, "--cluster-dir", defaultClusterDirForDataDir(generatedDir(dataRoot, 10, 3)));
+        int jobs = optionInt(args, "--jobs", 1);
+        bool force = takeFlag(args, "--force");
+        generateClusterDiagrams(clusterDir, jobs, force);
+    } else if (command == "re-cluster" || command == "recluster") {
+        fs::path clusterDir = optionPath(
+            args, "--cluster-dir", defaultClusterDirForDataDir(generatedDir(dataRoot, 10, 3)));
+        fs::path outDir = optionPath(args, "--out-dir", defaultReClusterDirForClusterDir(clusterDir));
+        reClusterByClassSize(clusterDir, outDir);
     } else if (command == "default") {
         int total = optionInt(args, "--total-crs", 10);
         int maxPrime = optionInt(args, "--max-prime-cnt", 3);

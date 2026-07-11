@@ -52,6 +52,31 @@ Compute Khovanov homology for the generated files:
 build/cpp_com_link_gen khovanov --dir data/com_link_gen_10-v0.1.0-com_link_gen-10-3 --jobs 8
 ```
 
+Run the downstream classification pipeline after Khovanov headers are present:
+
+```bash
+build/cpp_com_link_gen postprocess --dir data/com_link_gen_10-v0.1.0-com_link_gen-10-3 --jobs 8
+```
+
+This replaces the old `get_khovanov.py`, `make_all_diagram.py`, and
+`re_cluster.py` scripts. It writes:
+
+- `data/cluster/<md5>/`: one folder per distinct Khovanov key, with duplicate
+  `PD_CODE` entries ignored.
+- `khovanov.txt`: the normalized Khovanov values for the class.
+- `*.svg`: self-contained C++ generated PD/component diagrams for each retained
+  representative.
+- `data/re_cluster/NNN/<md5>/`: the same classes regrouped by the number of
+  retained link representatives in the class.
+
+The individual downstream stages are also available:
+
+```bash
+build/cpp_com_link_gen classify --dir data/com_link_gen_10-v0.1.0-com_link_gen-10-3
+build/cpp_com_link_gen diagrams --cluster-dir data/cluster --jobs 8 --force
+build/cpp_com_link_gen re-cluster --cluster-dir data/cluster
+```
+
 Generate and process in one command:
 
 ```bash
@@ -83,6 +108,9 @@ point.
   For each orientation the program passes explicit crossing signs to `cppkh`,
   then removes duplicate homology strings. The final distinct count is checked
   against the `2^(n-1)` theoretical upper bound.
+- Downstream clustering is implemented in C++ and does not call the old Python
+  scripts. The diagram stage writes SVG files instead of the old Pillow PNG
+  files so the pipeline stays self-contained and cross-platform.
 
 ## Smoke Test
 

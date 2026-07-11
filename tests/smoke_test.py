@@ -58,6 +58,14 @@ def main() -> int:
         files = sorted(generated.glob("*.txt"))
         assert len(files) == 4
 
+        run(["khovanov", "--dir", str(generated), "--jobs", "2"])
+        run(["postprocess", "--dir", str(generated), "--jobs", "2"])
+        cluster_dir = data_root / "cluster"
+        re_cluster_dir = data_root / "re_cluster"
+        assert cluster_dir.is_dir()
+        assert re_cluster_dir.is_dir()
+        assert list(cluster_dir.rglob("*.svg"))
+
         run(["process-one", str(files[0])])
         content = files[0].read_text(encoding="utf-8")
         assert "// KHOVANOV:" in content
