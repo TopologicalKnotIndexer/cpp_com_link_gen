@@ -36,7 +36,9 @@ def main() -> int:
 
     hopf = "[[2,3,1,4],[4,1,3,2]]"
     hopf_kh = run(["kh", "--pd", hopf]).splitlines()
-    assert len(hopf_kh) == 2
+    assert len(hopf_kh) == 1
+    hopf_all = run(["kh-all-orientations", "--pd", hopf]).splitlines()
+    assert len(hopf_all) == 2
 
     with tempfile.TemporaryDirectory(prefix="cpp_com_link_gen_test_") as tmp:
         tmp_path = Path(tmp)

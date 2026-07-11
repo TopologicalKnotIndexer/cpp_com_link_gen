@@ -25,19 +25,22 @@ PD_HEADER_RE = re.compile(r"^//\s*PD_CODE:\s*(.*)$")
 KH_HEADER_RE = re.compile(r"^//\s*KHOVANOV:\s*(.*)$")
 METHOD_RE = re.compile(r"^L\[(\d+)\s*,\s*(\d+)\]\s*#\s*L\[(\d+)\s*,\s*(\d+)\]\s*$")
 
-KNOWN_KH = {
+KNOWN_KH_SINGLE = {
     "unknot": (
         "[]",
-        {
-            "q^-1*t^0*Z[0] + q^1*t^0*Z[0]",
-        },
+        "q^-1*t^0*Z[0] + q^1*t^0*Z[0]",
     ),
     "right_trefoil": (
         "[[1,5,2,4],[3,1,4,6],[5,3,6,2]]",
-        {
-            "q^1*t^0*Z[0] + q^3*t^0*Z[0] + q^5*t^2*Z[0] + q^7*t^3*Z[2] + q^9*t^3*Z[0]",
-        },
+        "q^1*t^0*Z[0] + q^3*t^0*Z[0] + q^5*t^2*Z[0] + q^7*t^3*Z[2] + q^9*t^3*Z[0]",
     ),
+    "hopf_link": (
+        "[[2,3,1,4],[4,1,3,2]]",
+        "q^-6*t^-2*Z[0] + q^-4*t^-2*Z[0] + q^-2*t^0*Z[0] + q^0*t^0*Z[0]",
+    ),
+}
+
+KNOWN_KH_ALL_ORIENTATIONS = {
     "hopf_link": (
         "[[2,3,1,4],[4,1,3,2]]",
         {
@@ -365,10 +368,20 @@ def assert_generated_file_invariants(path: Path) -> tuple[int, int, int]:
 
 
 def assert_known_khovanov_values() -> None:
-    for name, (pd_text, expected) in KNOWN_KH.items():
-        actual = set(run(["kh", "--pd", pd_text], timeout=120).splitlines())
+    for name, (pd_text, expected) in KNOWN_KH_SINGLE.items():
+        actual = run(["kh", "--pd", pd_text], timeout=120).splitlines()
+        if actual != [expected]:
+            raise AssertionError(
+                f"{name}: unexpected single-PD Khovanov output\n"
+                f"expected={[expected]}\nactual={actual}"
+            )
+    for name, (pd_text, expected) in KNOWN_KH_ALL_ORIENTATIONS.items():
+        actual = set(run(["kh-all-orientations", "--pd", pd_text], timeout=120).splitlines())
         if actual != expected:
-            raise AssertionError(f"{name}: unexpected Khovanov output\nexpected={expected}\nactual={actual}")
+            raise AssertionError(
+                f"{name}: unexpected all-orientations output\n"
+                f"expected={expected}\nactual={actual}"
+            )
     print("known Khovanov examples passed")
 
 
@@ -496,7 +509,7 @@ def main() -> int:
     assert_generation_counts()
 
     samples = run_generated_dataset_validation(args.total_crs, args.max_prime_cnt, args.jobs)
-    for pd_text, _ in KNOWN_KH.values():
+    for pd_text, _ in KNOWN_KH_SINGLE.values():
         pd = parse_pd(pd_text)
         samples.append((pd, component_count(pd)))
     run_optional_spherogram_check(samples, args.require_spherogram)

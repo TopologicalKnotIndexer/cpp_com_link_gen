@@ -90,6 +90,7 @@ build/cpp_com_link_gen process-one path/to/0000001.txt
 build/cpp_com_link_gen legacy --dir path/to/data --mod 16 --res 0
 build/cpp_com_link_gen pd --file path/to/link_rep.txt
 build/cpp_com_link_gen kh --pd "[[1,5,2,4],[3,1,4,6],[5,3,6,2]]"
+build/cpp_com_link_gen kh-all-orientations --pd "[[2,3,1,4],[4,1,3,2]]"
 ```
 
 Python export helpers:
@@ -107,8 +108,8 @@ This writes one ordered line per selected file:
 0000001.txt: [[...], ...]
 ```
 
-To recompute Khovanov values from each file's `PD_CODE` through the C++/`cppkh`
-path and write one ordered line per file:
+To recompute exactly one Khovanov value from each file's `PD_CODE` through the
+C++/`cppkh` path and write one ordered line per file:
 
 ```bash
 python scripts/export_cppkh_pd_khovanov.py \
@@ -119,8 +120,10 @@ python scripts/export_cppkh_pd_khovanov.py \
 ```
 
 Both scripts support `--start-index`, `--end-index`, `--limit`, and
-`--recursive`. If a file cannot be parsed or computed, its output line contains
-a single-line `ERROR[...]` value in place of the PD code or homology.
+`--recursive`. The cppkh export writes directly to the target file and flushes
+ordered result lines as they become available. If a file cannot be parsed or
+computed, its output line contains a single-line `ERROR[...]` value in place of
+the PD code or homology.
 
 If run without arguments, the executable prompts for `process_count>>>` and
 processes the default generated `10,3` directory, matching the old Python entry
@@ -183,14 +186,17 @@ and PD round trips.
 The Sage helper can export one Sage-computed Khovanov homology value for every
 selected generated `.txt` file. It extracts only `PD_CODE`, lets Sage construct
 the link directly from that PD code, computes `Link(pd).khovanov_homology()`,
-and writes ordered lines of the form `filename： homology`.
+and writes ordered lines of the form `filename: homology`. The output path is
+converted to an absolute path and printed at startup. Relative paths are
+resolved from Sage's current working directory, so use an absolute output path
+if you want the file in this repository's `build` directory.
 
 ```sage
 load("sage/check_oriented_khovanov.sage")
 
 write_sage_pd_khovanov_directory(
     "data/com_link_gen_10-v0.1.0-com_link_gen-10-3",
-    "sage_pd_khovanov.txt",
+    "build/sage_pd_khovanov.txt",
     numeric_only=True,
     workers=8,
     progress_every=25,
@@ -198,14 +204,15 @@ write_sage_pd_khovanov_directory(
 ```
 
 The output file keeps the selected file order, even though computation is
-parallel. If a file fails to parse or Sage fails to compute its Khovanov
+parallel. It is created immediately and flushed as ordered results become
+available. If a file fails to parse or Sage fails to compute its Khovanov
 homology, that file still gets a line and the homology field is replaced by a
 single-line `ERROR[...]` value.
 
 ```sage
 write_sage_pd_khovanov_directory(
     "data/com_link_gen_10-v0.1.0-com_link_gen-10-3",
-    "sage_pd_khovanov_0001_1000.txt",
+    "build/sage_pd_khovanov_0001_1000.txt",
     start_index=1,
     end_index=1000,
     numeric_only=True,

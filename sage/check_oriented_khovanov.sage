@@ -16,8 +16,9 @@ Then run, for example:
 
 The main export helper extracts PD_CODE from each selected txt file, lets Sage
 compute one integral Khovanov homology directly from that PD code, and writes
-ordered lines of the form ``filename： homology``.  Per-file errors are written
-as single-line ``ERROR[...]`` values in the homology field.
+ordered lines of the form ``filename: homology``.  The output file is created
+immediately and flushed as ordered results become available.  Per-file errors
+are written as single-line ``ERROR[...]`` values in the homology field.
 """
 
 import ast
@@ -674,6 +675,14 @@ def _one_line_error(exc):
     return "ERROR[{}]".format(text)
 
 
+def _flush_output_file(fp):
+    fp.flush()
+    try:
+        os.fsync(fp.fileno())
+    except OSError:
+        pass
+
+
 def _output_label_for_path(data_dir, path, recursive=False):
     if recursive:
         return os.path.relpath(path, data_dir).replace(os.sep, "/")
@@ -702,15 +711,17 @@ def write_sage_pd_khovanov_directory(
     file, computes ``Link(pd_code).khovanov_homology(ring=ZZ)`` in parallel,
     and writes one line per file:
 
-        filename： q^...*t^...*Z[...]
+        filename: q^...*t^...*Z[...]
 
     The output order is the selected file order, not worker completion order.
+    The output file is opened immediately and flushed as soon as the next
+    ordered result line is available, so it can be watched while Sage runs.
     If parsing or Sage computation fails for a file, the corresponding output
     line is still written, with the homology field replaced by a single-line
     ``ERROR[...]`` value.
     """
-    data_dir = str(data_dir)
-    output_path = str(output_path)
+    data_dir = os.path.abspath(str(data_dir))
+    output_path = os.path.abspath(str(output_path))
     paths = _selected_txt_files(
         data_dir,
         limit=limit,
@@ -742,35 +753,47 @@ def write_sage_pd_khovanov_directory(
 
     started_at = time.time()
     checked = 0
+    written = 0
     error_count = 0
     results = [None] * len(tasks)
     pool = ctx.Pool(processes=worker_count)
     pool_closed = False
+    output_dir = os.path.dirname(output_path)
+    if output_dir and not os.path.isdir(output_dir):
+        os.makedirs(output_dir)
     try:
-        iterator = pool.imap_unordered(
-            _sage_pd_khovanov_export_worker,
-            tasks,
-            chunksize=max(1, int(chunksize)),
-        )
-        for item in iterator:
-            checked += 1
-            results[int(item["index"])] = item
-            if item.get("error") is not None:
-                error_count += 1
+        with open(output_path, "w", encoding="utf-8", newline="\n") as fp:
+            _flush_output_file(fp)
+            iterator = pool.imap_unordered(
+                _sage_pd_khovanov_export_worker,
+                tasks,
+                chunksize=max(1, int(chunksize)),
+            )
+            for item in iterator:
+                checked += 1
+                results[int(item["index"])] = item
+                if item.get("error") is not None:
+                    error_count += 1
 
-            if progress_every and (
-                checked == 1 or checked % int(progress_every) == 0 or checked == len(tasks)
-            ):
-                elapsed = time.time() - started_at
-                speed = checked / elapsed if elapsed > 0 else 0.0
-                print(
-                    "  computed {}/{} errors={} speed={:.2f}/s".format(
-                        checked, len(tasks), error_count, speed
+                while written < len(results) and results[written] is not None:
+                    ready = results[written]
+                    fp.write("{}: {}\n".format(ready["label"], ready["homology"]))
+                    written += 1
+                _flush_output_file(fp)
+
+                if progress_every and (
+                    checked == 1 or checked % int(progress_every) == 0 or checked == len(tasks)
+                ):
+                    elapsed = time.time() - started_at
+                    speed = checked / elapsed if elapsed > 0 else 0.0
+                    print(
+                        "  computed {}/{} written={} errors={} speed={:.2f}/s".format(
+                            checked, len(tasks), written, error_count, speed
+                        )
                     )
-                )
-        else:
-            pool.close()
-            pool_closed = True
+            else:
+                pool.close()
+                pool_closed = True
     except Exception:
         if not pool_closed:
             pool.terminate()
@@ -785,14 +808,8 @@ def write_sage_pd_khovanov_directory(
     if missing:
         raise RuntimeError("missing worker result indices: {}".format(missing[:10]))
 
-    output_dir = os.path.dirname(os.path.abspath(output_path))
-    if output_dir and not os.path.isdir(output_dir):
-        os.makedirs(output_dir)
-    temp_output_path = output_path + ".tmp"
-    with open(temp_output_path, "w", encoding="utf-8", newline="\n") as fp:
-        for item in results:
-            fp.write("{}： {}\n".format(item["label"], item["homology"]))
-    os.replace(temp_output_path, output_path)
+    if written != len(results):
+        raise RuntimeError("only wrote {}/{} result lines".format(written, len(results)))
 
     elapsed = time.time() - started_at
     print(

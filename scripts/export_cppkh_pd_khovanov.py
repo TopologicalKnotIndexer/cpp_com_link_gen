@@ -15,6 +15,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 EXE = ROOT / "build" / ("cpp_com_link_gen.exe" if os.name == "nt" else "cpp_com_link_gen")
 PD_HEADER_RE = re.compile(r"^//\s*PD_CODE:\s*(.*)$")
+BUILD_INPUTS = [
+    ROOT / "build.py",
+    ROOT / "src" / "main.cpp",
+    ROOT / "third_party" / "cppkh" / "src" / "main.cpp",
+]
 
 
 def one_line_error(exc: BaseException | str) -> str:
@@ -30,8 +35,18 @@ def one_line_error(exc: BaseException | str) -> str:
 
 def ensure_built() -> None:
     if EXE.is_file():
-        return
+        exe_mtime = EXE.stat().st_mtime
+        if all((not path.exists()) or path.stat().st_mtime <= exe_mtime for path in BUILD_INPUTS):
+            return
     subprocess.check_call([sys.executable, str(ROOT / "build.py")], cwd=ROOT)
+
+
+def flush_output(fp) -> None:
+    fp.flush()
+    try:
+        os.fsync(fp.fileno())
+    except OSError:
+        return
 
 
 def parse_pd_code_from_file(path: Path) -> str:
@@ -99,8 +114,17 @@ def compute_one(task: tuple[int, str, str, str, int]) -> dict[str, object]:
             ok = False
         else:
             lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
-            homology = " || ".join(lines) if lines else one_line_error("empty cppkh output")
-            ok = bool(lines)
+            if len(lines) == 1:
+                homology = lines[0]
+                ok = True
+            else:
+                preview = " || ".join(lines[:4])
+                if len(lines) > 4:
+                    preview += " || ..."
+                homology = one_line_error(
+                    f"expected exactly one cppkh homology line, got {len(lines)}: {preview}"
+                )
+                ok = False
         return {
             "index": index,
             "label": label,
@@ -154,33 +178,43 @@ def export_cppkh_khovanov(
     results: list[dict[str, object] | None] = [None] * len(tasks)
     started_at = time.time()
     checked = 0
+    written = 0
     errors = 0
 
     print(f"cppkh export starting: files={len(tasks)} workers={worker_count} output={output_path}")
-    with multiprocessing.Pool(processes=worker_count) as pool:
-        for item in pool.imap_unordered(compute_one, tasks, chunksize=max(1, int(chunksize))):
-            checked += 1
-            results[int(item["index"])] = item
-            if not item["ok"]:
-                errors += 1
-            if progress_every and (
-                checked == 1 or checked % progress_every == 0 or checked == len(tasks)
-            ):
-                elapsed = time.time() - started_at
-                speed = checked / elapsed if elapsed > 0 else 0.0
-                print(f"  computed {checked}/{len(tasks)} errors={errors} speed={speed:.2f}/s")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8", newline="\n") as fp:
+        flush_output(fp)
+        with multiprocessing.Pool(processes=worker_count) as pool:
+            for item in pool.imap_unordered(compute_one, tasks, chunksize=max(1, int(chunksize))):
+                checked += 1
+                results[int(item["index"])] = item
+                if not item["ok"]:
+                    errors += 1
+
+                while written < len(results) and results[written] is not None:
+                    ready = results[written]
+                    assert ready is not None
+                    fp.write(f"{ready['label']}: {ready['homology']}\n")
+                    written += 1
+                flush_output(fp)
+
+                if progress_every and (
+                    checked == 1 or checked % progress_every == 0 or checked == len(tasks)
+                ):
+                    elapsed = time.time() - started_at
+                    speed = checked / elapsed if elapsed > 0 else 0.0
+                    print(
+                        f"  computed {checked}/{len(tasks)} written={written} "
+                        f"errors={errors} speed={speed:.2f}/s"
+                    )
 
     missing = [index for index, item in enumerate(results) if item is None]
     if missing:
         raise RuntimeError(f"missing worker result indices: {missing[:10]}")
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = output_path.with_name(output_path.name + ".tmp")
-    with temp_path.open("w", encoding="utf-8", newline="\n") as fp:
-        for item in results:
-            assert item is not None
-            fp.write(f"{item['label']}: {item['homology']}\n")
-    os.replace(temp_path, output_path)
+    if written != len(results):
+        raise RuntimeError(f"only wrote {written}/{len(results)} result lines")
 
     elapsed = time.time() - started_at
     print(f"cppkh export written: files={len(results)} errors={errors} output={output_path} elapsed={elapsed:.1f}s")

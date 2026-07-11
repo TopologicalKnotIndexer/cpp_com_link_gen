@@ -28,6 +28,7 @@
 #include <vector>
 
 extern "C" {
+char* cppkh_compute_pd_ex(const char* pd_code, int simplify_pd, int reorder_crossings);
 char* cppkh_compute_pd_signed_variants_ex(const char* pd_code, const char* signs_text, int reorder_crossings);
 const char* cppkh_last_error();
 void cppkh_free(char* value);
@@ -578,6 +579,11 @@ std::vector<int> baseCrossingSigns(const PDCode& pd) {
     return signs;
 }
 
+std::mutex& cppkhMutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+
 std::unordered_map<int, size_t> labelComponentIndex(const std::vector<std::vector<int>>& components) {
     std::unordered_map<int, size_t> index;
     for (size_t i = 0; i < components.size(); ++i) {
@@ -624,6 +630,30 @@ std::string orientationSignsDocument(
     return document.str();
 }
 
+std::string computeKhovanovSinglePD(const PDCode& pd) {
+    validatePDCode(pd);
+    std::string pdText = formatKnotTheoryPD(pd);
+
+    std::string rawOutput;
+    {
+        std::lock_guard<std::mutex> lock(cppkhMutex());
+        rawOutput = takeCppkhString(cppkh_compute_pd_ex(pdText.c_str(), 1, 1));
+    }
+
+    std::vector<std::string> lines;
+    for (std::string line : splitLines(rawOutput)) {
+        line = trim(line);
+        if (!line.empty()) lines.push_back(line);
+    }
+    if (lines.size() != 1) {
+        std::ostringstream err;
+        err << "single PD Khovanov computation returned " << lines.size()
+            << " non-empty line(s), expected exactly one";
+        throw std::runtime_error(err.str());
+    }
+    return lines.front();
+}
+
 std::vector<std::string> computeKhovanovAllOrientations(const PDCode& pd) {
     validatePDCode(pd);
     std::vector<std::vector<int>> components = componentsFromPDCode(pd);
@@ -634,10 +664,9 @@ std::vector<std::string> computeKhovanovAllOrientations(const PDCode& pd) {
     std::string pdText = formatKnotTheoryPD(pd);
     std::string signsText = orientationSignsDocument(pd, components, orientationCount);
 
-    static std::mutex cppkhMutex;
     std::string rawOutput;
     {
-        std::lock_guard<std::mutex> lock(cppkhMutex);
+        std::lock_guard<std::mutex> lock(cppkhMutex());
         rawOutput = takeCppkhString(cppkh_compute_pd_signed_variants_ex(pdText.c_str(), signsText.c_str(), 1));
     }
 
@@ -1511,7 +1540,8 @@ void usage() {
         << "  cpp_com_link_gen process-one FILE\n"
         << "  cpp_com_link_gen legacy --dir DIR --mod M --res R\n"
         << "  cpp_com_link_gen pd --file LINK_REP.txt\n"
-        << "  cpp_com_link_gen kh --pd \"[[1,5,2,4],...]\"\n";
+        << "  cpp_com_link_gen kh --pd \"[[1,5,2,4],...]\"\n"
+        << "  cpp_com_link_gen kh-all-orientations --pd \"[[1,5,2,4],...]\"\n";
 }
 
 int runCommand(std::vector<std::string> args) {
@@ -1593,6 +1623,10 @@ int runCommand(std::vector<std::string> args) {
     } else if (command == "kh") {
         auto pdText = takeOption(args, "--pd");
         if (!pdText) throw std::runtime_error("kh needs --pd");
+        std::cout << computeKhovanovSinglePD(parsePDCode(*pdText)) << "\n";
+    } else if (command == "kh-all-orientations") {
+        auto pdText = takeOption(args, "--pd");
+        if (!pdText) throw std::runtime_error("kh-all-orientations needs --pd");
         for (const std::string& item : computeKhovanovAllOrientations(parsePDCode(*pdText))) {
             std::cout << item << "\n";
         }
