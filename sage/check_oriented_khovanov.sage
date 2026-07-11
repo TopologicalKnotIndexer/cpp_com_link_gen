@@ -8,6 +8,7 @@ Load this file inside Sage:
 Then run, for example:
 
     sage: check_khovanov_file("data/com_link_gen_10-v0.1.0-com_link_gen-10-3/0000001.txt")
+    sage: check_sage_membership_directory("data/com_link_gen_10-v0.1.0-com_link_gen-10-3")
     sage: check_khovanov_directory("data/com_link_gen_10-v0.1.0-com_link_gen-10-3", limit=20)
 
 The checker enumerates all 2^n component orientations.  It builds oriented
@@ -346,6 +347,75 @@ def check_khovanov_file(path, implementation=None, verbose=True):
     return result
 
 
+def _homology_set_text(values, limit=None):
+    values = sorted(values)
+    if limit is not None:
+        values = values[:int(limit)]
+    return [canonical_homology_to_cppkh_text(value) for value in values]
+
+
+def check_sage_membership_file(path, mask=0, implementation=None, verbose=True, raise_on_failure=True):
+    """
+    Compute one Sage Khovanov homology and check membership in file headers.
+
+    This is a deliberately weaker but faster validation than
+    ``check_khovanov_file``.  It verifies that the Sage result for one explicit
+    component-orientation mask appears among the generated ``KHOVANOV`` values.
+    Any parse error or Sage error is allowed to propagate.
+    """
+    pd_code, expected = expected_homology_set_from_file(path)
+    components = components_from_pd(pd_code)
+    orientation_count = 1 if not components else 2 ** len(components)
+    mask = int(mask)
+    if mask < 0 or mask >= orientation_count:
+        raise ValueError(
+            "mask {} is out of range for {} component(s); valid range is [0, {})".format(
+                mask, len(components), orientation_count
+            )
+        )
+
+    sage_value = sage_khovanov_for_orientation(pd_code, mask, implementation=implementation)
+    ok = sage_value in expected
+    result = {
+        "path": path,
+        "ok": ok,
+        "mask": mask,
+        "component_count": len(components),
+        "orientation_count": orientation_count,
+        "expected_count": len(expected),
+        "sage_homology": sage_value,
+        "sage_homology_text": canonical_homology_to_cppkh_text(sage_value),
+        "file_homology_text": _homology_set_text(expected),
+    }
+
+    if verbose:
+        status = "OK" if ok else "FAIL"
+        print(
+            "{} {} mask={} components={} orientations={} file_kh={}".format(
+                status, path, mask, len(components), orientation_count, len(expected)
+            )
+        )
+        if not ok:
+            print("  Sage homology:")
+            print("    {}".format(result["sage_homology_text"]))
+            print("  File KHOVANOV values:")
+            for item in result["file_homology_text"]:
+                print("    {}".format(item))
+
+    if not ok and raise_on_failure:
+        raise AssertionError(
+            "{}: Sage Khovanov result for mask={} is not present in KHOVANOV headers\n"
+            "Sage: {}\n"
+            "File values:\n{}".format(
+                path,
+                mask,
+                result["sage_homology_text"],
+                "\n".join("  " + item for item in result["file_homology_text"]),
+            )
+        )
+    return result
+
+
 def diagnose_khovanov_file(path, mask=0, implementation=None):
     """
     Run one file and one orientation mask without suppressing exceptions.
@@ -398,6 +468,28 @@ def _numeric_txt_files(data_dir):
     return sorted(paths, key=lambda p: int(os.path.basename(p)[:-4]))
 
 
+def _txt_sort_key(path):
+    stem = os.path.basename(path)[:-4]
+    if stem.isdigit():
+        return (0, int(stem), stem)
+    return (1, stem)
+
+
+def _txt_files(data_dir, recursive=False):
+    paths = []
+    if recursive:
+        for root, _, filenames in os.walk(data_dir):
+            for filename in filenames:
+                if filename.endswith(".txt"):
+                    paths.append(os.path.join(root, filename))
+    else:
+        for filename in os.listdir(data_dir):
+            path = os.path.join(data_dir, filename)
+            if filename.endswith(".txt") and os.path.isfile(path):
+                paths.append(path)
+    return sorted(paths, key=_txt_sort_key)
+
+
 def _selected_numeric_txt_files(data_dir, limit=None, start_index=None, end_index=None):
     paths = _numeric_txt_files(data_dir)
     if start_index is not None:
@@ -407,6 +499,118 @@ def _selected_numeric_txt_files(data_dir, limit=None, start_index=None, end_inde
     if limit is not None:
         paths = paths[:int(limit)]
     return paths
+
+
+def _selected_txt_files(
+    data_dir,
+    limit=None,
+    start_index=None,
+    end_index=None,
+    recursive=False,
+    numeric_only=False,
+):
+    paths = _numeric_txt_files(data_dir) if numeric_only else _txt_files(data_dir, recursive=recursive)
+    if start_index is not None:
+        paths = [
+            p for p in paths
+            if os.path.basename(p)[:-4].isdigit()
+            and int(os.path.basename(p)[:-4]) >= int(start_index)
+        ]
+    if end_index is not None:
+        paths = [
+            p for p in paths
+            if os.path.basename(p)[:-4].isdigit()
+            and int(os.path.basename(p)[:-4]) <= int(end_index)
+        ]
+    if limit is not None:
+        paths = paths[:int(limit)]
+    return paths
+
+
+def check_sage_membership_directory(
+    data_dir,
+    mask=0,
+    implementation=None,
+    limit=None,
+    start_index=None,
+    end_index=None,
+    recursive=False,
+    numeric_only=False,
+    progress_every=25,
+    json_report_path=None,
+):
+    """
+    Check every selected txt file by one Sage Khovanov membership test.
+
+    For each file, this extracts ``PD_CODE``, computes Sage Khovanov homology
+    for one component-orientation mask, and checks that this value is present
+    in the file's existing ``KHOVANOV`` headers.  The function stops
+    immediately on the first parse error, Sage error, or membership failure.
+    """
+    paths = _selected_txt_files(
+        data_dir,
+        limit=limit,
+        start_index=start_index,
+        end_index=end_index,
+        recursive=recursive,
+        numeric_only=numeric_only,
+    )
+    if not paths:
+        raise ValueError("no txt files selected under {}".format(data_dir))
+
+    print(
+        "Sage single-membership check starting: files={} mask={} recursive={} numeric_only={}".format(
+            len(paths), int(mask), bool(recursive), bool(numeric_only)
+        )
+    )
+
+    checked = 0
+    started_at = time.time()
+    results = []
+    for path in paths:
+        checked += 1
+        verbose = progress_every and (
+            checked == 1 or checked % int(progress_every) == 0 or checked == len(paths)
+        )
+        result = check_sage_membership_file(
+            path,
+            mask=mask,
+            implementation=implementation,
+            verbose=verbose,
+            raise_on_failure=True,
+        )
+        results.append(result)
+
+    elapsed = time.time() - started_at
+    summary = {
+        "data_dir": data_dir,
+        "implementation": implementation,
+        "mode": "single-membership",
+        "mask": int(mask),
+        "checked": int(checked),
+        "ok": True,
+        "elapsed_seconds": float(elapsed),
+        "recursive": bool(recursive),
+        "numeric_only": bool(numeric_only),
+        "results": [
+            {
+                "path": item["path"],
+                "mask": item["mask"],
+                "component_count": item["component_count"],
+                "orientation_count": item["orientation_count"],
+                "expected_count": item["expected_count"],
+                "sage_homology": item["sage_homology_text"],
+            }
+            for item in results
+        ],
+    }
+    print(
+        "Sage single-membership check passed: checked={} elapsed={:.1f}s".format(
+            checked, elapsed
+        )
+    )
+    _write_json_report(summary, json_report_path)
+    return summary
 
 
 def _canonical_list_to_text(values, limit=None):
@@ -823,5 +1027,5 @@ def check_khovanov_directory_parallel(
 
 
 print("Loaded Sage Khovanov orientation checker.")
-print("Try: check_khovanov_file('data/com_link_gen_10-v0.1.0-com_link_gen-10-3/0000001.txt')")
-print("For full data, use: check_khovanov_directory_parallel(..., workers=8)")
+print("Fast membership check: check_sage_membership_directory(..., numeric_only=True)")
+print("Full set check: check_khovanov_directory_parallel(..., workers=8)")

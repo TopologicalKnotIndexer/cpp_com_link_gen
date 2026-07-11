@@ -150,13 +150,26 @@ and PD round trips.
 
 ## SageMath Khovanov Cross-Check
 
-There is also a SageMath-only checker for recomputing every component
-orientation with Sage's `Link.khovanov_homology()` implementation:
+There are also SageMath-only checkers using Sage's
+`Link.khovanov_homology()` implementation. The fastest validation path computes
+one Sage Khovanov homology per file and checks membership in the generated
+`KHOVANOV` set:
 
 ```sage
 load("sage/check_oriented_khovanov.sage")
-check_khovanov_file("data/com_link_gen_10-v0.1.0-com_link_gen-10-3/0000001.txt")
+check_sage_membership_directory(
+    "data/com_link_gen_10-v0.1.0-com_link_gen-10-3",
+    numeric_only=True,
+    progress_every=25,
+)
 ```
+
+The membership checker is the fastest Sage validation path. For each selected
+`.txt` file, it extracts `PD_CODE`, computes one Sage Khovanov homology for
+`mask=0`, and checks that this Sage value is present among the file's existing
+`KHOVANOV` headers. It stops immediately on the first parse error, Sage error,
+or missing membership. Use `mask=...` to check a different component-orientation
+mask.
 
 For a parallel directory sample:
 
