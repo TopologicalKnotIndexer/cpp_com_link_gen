@@ -92,6 +92,36 @@ build/cpp_com_link_gen pd --file path/to/link_rep.txt
 build/cpp_com_link_gen kh --pd "[[1,5,2,4],[3,1,4,6],[5,3,6,2]]"
 ```
 
+Python export helpers:
+
+```bash
+python scripts/export_pd_codes.py \
+  --dir data/com_link_gen_10-v0.1.0-com_link_gen-10-3 \
+  --output build/pd_codes_10_3.txt \
+  --numeric-only
+```
+
+This writes one ordered line per selected file:
+
+```text
+0000001.txt: [[...], ...]
+```
+
+To recompute Khovanov values from each file's `PD_CODE` through the C++/`cppkh`
+path and write one ordered line per file:
+
+```bash
+python scripts/export_cppkh_pd_khovanov.py \
+  --dir data/com_link_gen_10-v0.1.0-com_link_gen-10-3 \
+  --output build/cppkh_pd_khovanov_10_3.txt \
+  --numeric-only \
+  --workers 8
+```
+
+Both scripts support `--start-index`, `--end-index`, `--limit`, and
+`--recursive`. If a file cannot be parsed or computed, its output line contains
+a single-line `ERROR[...]` value in place of the PD code or homology.
+
 If run without arguments, the executable prompts for `process_count>>>` and
 processes the default generated `10,3` directory, matching the old Python entry
 point.
