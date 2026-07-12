@@ -14,6 +14,9 @@ The generator uses the bundled `prime-link-knot-10` PD tables, parses the
 `link-rep` text format directly, fixes connected-sum/orientation handling in
 C++, and computes Khovanov homology through
 [`GGN-2015/cppkh`](https://github.com/GGN-2015/cppkh).
+The vendored backend is synchronized to upstream commit
+`37b3cc345b3b80844239708edce2848062dfcde1`, including its Sage-compatible
+link crossing-orientation fix.
 
 ## Build
 
@@ -130,6 +133,15 @@ the PD code or homology.
 If run without arguments, the executable prompts for `process_count>>>` and
 processes the default generated `10,3` directory, matching the old Python entry
 point.
+
+Inspect the Sage-compatible crossing signs inferred for one PD code:
+
+```bash
+build/cpp_com_link_gen crossing-signs --pd "[[1,4,2,3],[2,4,1,3]]"
+```
+
+The output for this example is `-1 1`. This command is useful when checking
+relabelled or multi-component PD inputs against another implementation.
 
 ## Notes
 

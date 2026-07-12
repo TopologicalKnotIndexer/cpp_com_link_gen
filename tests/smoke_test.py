@@ -50,6 +50,20 @@ def main() -> int:
     assert run(["kh", "--pd", relabeled_trefoil]).splitlines() == kh
     assert "twice" in run_failure(["kh", "--pd", "[[1,2,3,4]]"]).lower()
 
+    three_component = "[[1,2,5,4],[3,7,6,5],[4,6,9,8],[7,11,10,9],[8,10,13,1],[11,3,2,13]]"
+    three_component_relabelled = "[[8,1,12,4],[10,7,3,12],[4,3,9,2],[7,11,5,9],[2,5,6,8],[11,10,1,6]]"
+    orientation_cases = {
+        "[[1,4,2,3],[2,4,1,3]]": "-1 1",
+        three_component: "-1 1 -1 1 -1 1",
+        three_component_relabelled: "-1 1 -1 1 -1 1",
+        "[[1,1,2,2]]": "1",
+        "[[1,2,2,1]]": "-1",
+    }
+    for pd, signs in orientation_cases.items():
+        assert run(["crossing-signs", "--pd", pd]).strip() == signs
+
+    assert run(["kh", "--pd", three_component]) == run(["kh", "--pd", three_component_relabelled])
+
     hopf = "[[2,3,1,4],[4,1,3,2]]"
     hopf_kh = run(["kh", "--pd", hopf]).splitlines()
     assert len(hopf_kh) == 1

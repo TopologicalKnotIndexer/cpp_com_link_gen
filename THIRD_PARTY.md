@@ -4,7 +4,11 @@ This project vendors or consumes the following MIT-licensed components and
 data sources.
 
 - `GGN-2015/cppkh`, from <https://github.com/GGN-2015/cppkh>, is used as the
-  Khovanov homology backend.
+  Khovanov homology backend. The vendored source is synchronized to upstream
+  commit `37b3cc345b3b80844239708edce2848062dfcde1`. It carries a local C API
+  extension for evaluating multiple explicit crossing-sign variants and a fix
+  that makes relative `build.py --out` paths resolve from the caller's working
+  directory.
 - `pd-code-to-diagram` 0.1.8, from <https://pypi.org/project/pd-code-to-diagram/>,
   is vendored under `third_party/pd_code_to_diagram` and used to lay out PD_CODE
   diagrams before SVG rendering.

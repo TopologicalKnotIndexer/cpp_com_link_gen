@@ -659,18 +659,86 @@ std::string normalizeKhovanovZInvariants(const std::string& text) {
     return out;
 }
 
-int baseCrossingSign(const Crossing& crossing) {
-    int b = crossing[1];
-    int d = crossing[3];
-    if (b - d == 1 || d - b > 1) return 1;
-    if (d - b == 1 || b - d > 1) return -1;
-    throw std::runtime_error("error finding crossing sign");
-}
-
 std::vector<int> baseCrossingSigns(const PDCode& pd) {
-    std::vector<int> signs;
-    signs.reserve(pd.size());
-    for (const auto& crossing : pd) signs.push_back(baseCrossingSign(crossing));
+    validatePDCode(pd);
+    const int nodeCount = static_cast<int>(pd.size() * 4);
+    if (nodeCount == 0) return {};
+
+    const int largestLabel = maxLabel(pd);
+    std::vector<int> first(largestLabel + 1, -1);
+    std::vector<int> second(largestLabel + 1, -1);
+    for (size_t crossing = 0; crossing < pd.size(); ++crossing) {
+        for (int slot = 0; slot < 4; ++slot) {
+            int label = pd[crossing][slot];
+            int node = static_cast<int>(4 * crossing) + slot;
+            if (first[label] == -1) {
+                first[label] = node;
+            } else if (second[label] == -1) {
+                second[label] = node;
+            } else {
+                throw std::runtime_error("PD arc label appears more than twice");
+            }
+        }
+    }
+
+    std::vector<int> other(nodeCount, -1);
+    for (int label = 1; label <= largestLabel; ++label) {
+        if (first[label] == -1) continue;
+        if (second[label] == -1) throw std::runtime_error("PD arc label does not appear twice");
+        other[first[label]] = second[label];
+        other[second[label]] = first[label];
+    }
+
+    std::vector<signed char> outgoing(nodeCount, -1);
+    std::vector<int> queue;
+    queue.reserve(nodeCount);
+    auto orientComponent = [&](int seed, signed char direction) {
+        if (outgoing[seed] != -1) {
+            if (outgoing[seed] != direction) throw std::runtime_error("inconsistent PD orientation");
+            return;
+        }
+        queue.clear();
+        outgoing[seed] = direction;
+        queue.push_back(seed);
+        for (size_t head = 0; head < queue.size(); ++head) {
+            int node = queue[head];
+            int crossing = node / 4;
+            int slot = node % 4;
+            int neighbors[2] = {4 * crossing + ((slot + 2) % 4), other[node]};
+            for (int next : neighbors) {
+                if (next < 0) throw std::runtime_error("broken PD edge incidence");
+                signed char nextDirection = static_cast<signed char>(1 - outgoing[node]);
+                if (outgoing[next] == -1) {
+                    outgoing[next] = nextDirection;
+                    queue.push_back(next);
+                } else if (outgoing[next] != nextDirection) {
+                    throw std::runtime_error("inconsistent PD orientation");
+                }
+            }
+        }
+    };
+
+    // Sage's PD convention fixes the under-strand direction from slot 0 to 2.
+    for (size_t crossing = 0; crossing < pd.size(); ++crossing) {
+        orientComponent(static_cast<int>(4 * crossing + 2), 1);
+    }
+    for (int label = 1; label <= largestLabel; ++label) {
+        if (first[label] != -1 && outgoing[first[label]] == -1) {
+            orientComponent(first[label], 1);
+        }
+    }
+
+    std::vector<int> signs(pd.size());
+    for (size_t i = 0; i < pd.size(); ++i) {
+        const Crossing& crossing = pd[i];
+        if (crossing[0] == crossing[3] || crossing[2] == crossing[1]) {
+            signs[i] = -1;
+        } else if (crossing[3] == crossing[2] || crossing[0] == crossing[1]) {
+            signs[i] = 1;
+        } else {
+            signs[i] = outgoing[4 * i + 3] ? -1 : 1;
+        }
+    }
     return signs;
 }
 
@@ -692,8 +760,8 @@ void validateCppkhOrientedNumbering(const PDCode& pd) {
     for (const auto& crossing : pd) {
         checkAdjacentPair(crossing[0], crossing[2]);
         checkAdjacentPair(crossing[1], crossing[3]);
-        (void)baseCrossingSign(crossing);
     }
+    (void)baseCrossingSigns(pd);
 }
 
 PDCode preparePDForCppkh(const PDCode& pd) {
@@ -2243,6 +2311,7 @@ void usage() {
         << "  cpp_com_link_gen legacy --dir DIR --mod M --res R\n"
         << "  cpp_com_link_gen pd --file LINK_REP.txt\n"
         << "  cpp_com_link_gen svg (--pd \"[[1,5,2,4],...]\" | --file generated.txt) --out diagram.svg\n"
+        << "  cpp_com_link_gen crossing-signs --pd \"[[1,5,2,4],...]\"\n"
         << "  cpp_com_link_gen kh --pd \"[[1,5,2,4],...]\"\n"
         << "  cpp_com_link_gen kh-all-orientations --pd \"[[1,5,2,4],...]\"\n";
 }
@@ -2339,6 +2408,10 @@ int runCommand(std::vector<std::string> args) {
         auto pdText = takeOption(args, "--pd");
         if (!pdText) throw std::runtime_error("kh needs --pd");
         std::cout << computeKhovanovSinglePD(parsePDCode(*pdText)) << "\n";
+    } else if (command == "crossing-signs") {
+        auto pdText = takeOption(args, "--pd");
+        if (!pdText) throw std::runtime_error("crossing-signs needs --pd");
+        std::cout << formatCrossingSigns(baseCrossingSigns(parsePDCode(*pdText))) << "\n";
     } else if (command == "kh-all-orientations") {
         auto pdText = takeOption(args, "--pd");
         if (!pdText) throw std::runtime_error("kh-all-orientations needs --pd");
