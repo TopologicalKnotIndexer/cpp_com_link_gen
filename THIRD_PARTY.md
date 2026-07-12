@@ -5,6 +5,9 @@ data sources.
 
 - `GGN-2015/cppkh`, from <https://github.com/GGN-2015/cppkh>, is used as the
   Khovanov homology backend.
+- `pd-code-to-diagram` 0.1.8, from <https://pypi.org/project/pd-code-to-diagram/>,
+  is vendored under `third_party/pd_code_to_diagram` and used to lay out PD_CODE
+  diagrams before SVG rendering.
 - The prime knot/link PD tables under `data/prime_link_knot_10` come from the
   `prime-link-knot-10` Python package version `0.0.5`; its MIT license is
   copied to `data/prime_link_knot_10/LICENSE`.

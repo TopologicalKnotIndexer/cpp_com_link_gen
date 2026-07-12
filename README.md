@@ -89,6 +89,8 @@ Compatibility helpers:
 build/cpp_com_link_gen process-one path/to/0000001.txt
 build/cpp_com_link_gen legacy --dir path/to/data --mod 16 --res 0
 build/cpp_com_link_gen pd --file path/to/link_rep.txt
+build/cpp_com_link_gen svg --pd "[[2,3,1,4],[4,1,3,2]]" --out build/hopf.svg
+build/cpp_com_link_gen svg --file path/to/0000001.txt --out build/0000001.svg
 build/cpp_com_link_gen kh --pd "[[1,5,2,4],[3,1,4,6],[5,3,6,2]]"
 build/cpp_com_link_gen kh-all-orientations --pd "[[2,3,1,4],[4,1,3,2]]"
 ```
@@ -147,8 +149,9 @@ point.
 - Khovanov strings are normalized so every `Z[...]` invariant-factor list is
   sorted in ascending numeric order before output or clustering.
 - Downstream clustering is implemented in C++ and does not call the old Python
-  scripts. The diagram stage writes SVG files instead of the old Pillow PNG
-  files so the pipeline stays self-contained and cross-platform.
+  scripts. The diagram stage writes SVG files from PD_CODE matrix layouts using
+  the vendored `pd-code-to-diagram` C++ renderer path instead of the old Pillow
+  PNG files, so the pipeline stays self-contained and cross-platform.
 
 ## Smoke Test
 

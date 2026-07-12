@@ -20,6 +20,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 BUILD = ROOT / "build"
 THIRD_PARTY_CPPKH = ROOT / "third_party" / "cppkh"
+THIRD_PARTY_PD_DIAGRAM = ROOT / "third_party" / "pd_code_to_diagram" / "cpp_src"
 CPPKH_URL = "https://github.com/GGN-2015/cppkh.git"
 
 
@@ -90,6 +91,7 @@ def build(args: argparse.Namespace) -> Path:
             "/DCPPKH_SHARED_LIBRARY",
             "/DKH_THREAD_BACKEND_WIN32",
             "/D" + quote_define_path(ROOT),
+            "/I" + str(THIRD_PARTY_PD_DIAGRAM),
         ]
         flags += ["/Od", "/Zi"] if args.debug else ["/O2", "/DNDEBUG"]
         cmd = [cxx, *flags, *(str(src) for src in sources), f"/Fe:{out}"]
@@ -98,6 +100,8 @@ def build(args: argparse.Namespace) -> Path:
             "-std=c++17",
             "-DCPPKH_SHARED_LIBRARY",
             f"-D{quote_define_path(ROOT)}",
+            "-I",
+            str(THIRD_PARTY_PD_DIAGRAM),
             "-Wall",
             "-Wextra",
         ]

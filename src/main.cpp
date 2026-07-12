@@ -2,6 +2,7 @@
 #include <array>
 #include <atomic>
 #include <cctype>
+#include <chrono>
 #include <condition_variable>
 #include <cmath>
 #include <cstdint>
@@ -22,10 +23,36 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
+
+#ifndef DEBUG
+#define DEBUG 0
+#define CPP_COM_LINK_GEN_DEFINED_PD_DIAGRAM_DEBUG 1
+#endif
+#include "PdToDiagram2d.h"
+#ifdef CPP_COM_LINK_GEN_DEFINED_PD_DIAGRAM_DEBUG
+#undef DEBUG
+#undef CPP_COM_LINK_GEN_DEFINED_PD_DIAGRAM_DEBUG
+#endif
+#ifdef SHOW_CERTAIN_DEBUG_MESSAGE
+#undef SHOW_CERTAIN_DEBUG_MESSAGE
+#endif
+#ifdef SHOW_DEBUG_MESSAGE
+#undef SHOW_DEBUG_MESSAGE
+#endif
+#ifdef THROW_EXCEPTION
+#undef THROW_EXCEPTION
+#endif
+#ifdef DEFINE_EXCEPTION
+#undef DEFINE_EXCEPTION
+#endif
+#ifdef PROCESS_EXCEPTION
+#undef PROCESS_EXCEPTION
+#endif
 
 extern "C" {
 char* cppkh_compute_pd_signed_variants_ex(const char* pd_code, const char* signs_text, int reorder_crossings);
@@ -1390,8 +1417,8 @@ std::string xmlEscape(const std::string& text) {
 }
 
 struct SvgPoint {
-    double x = 0;
-    double y = 0;
+    double x = 0.0;
+    double y = 0.0;
 };
 
 std::string svgNumber(double value) {
@@ -1400,86 +1427,664 @@ std::string svgNumber(double value) {
     return out.str();
 }
 
-std::string crossingSignText(const Crossing& crossing) {
-    return baseCrossingSign(crossing) > 0 ? "+" : "-";
+constexpr int kDiagramTop = 1 << 0;
+constexpr int kDiagramRight = 1 << 1;
+constexpr int kDiagramBottom = 1 << 2;
+constexpr int kDiagramLeft = 1 << 3;
+
+struct DiagramMatrixBounds {
+    int minRow = 0;
+    int minCol = 0;
+    int maxRow = -1;
+    int maxCol = -1;
+
+    bool empty() const {
+        return maxRow < minRow || maxCol < minCol;
+    }
+
+    int rows() const {
+        return empty() ? 0 : maxRow - minRow + 1;
+    }
+
+    int cols() const {
+        return empty() ? 0 : maxCol - minCol + 1;
+    }
+};
+
+struct DiagramLayoutCandidate {
+    IntMatrix matrix;
+    double score = 0.0;
+    unsigned int seed = 0;
+    int borderSocket = -1;
+
+    DiagramLayoutCandidate(IntMatrix matrixIn,
+                           double scoreIn,
+                           unsigned int seedIn,
+                           int borderSocketIn)
+        : matrix(std::move(matrixIn)),
+          score(scoreIn),
+          seed(seedIn),
+          borderSocket(borderSocketIn) {}
+};
+
+PDCode renumberPdLabelsForDiagram(const PDCode& pd) {
+    validatePDCode(pd);
+    std::map<int, int> labelMap;
+    for (const Crossing& crossing : pd) {
+        for (int label : crossing) labelMap.emplace(label, 0);
+    }
+
+    int nextLabel = 1;
+    for (auto& item : labelMap) item.second = nextLabel++;
+
+    PDCode normalized = pd;
+    for (Crossing& crossing : normalized) {
+        for (int& label : crossing) label = labelMap.at(label);
+    }
+    return normalized;
 }
 
-std::string renderPDCodeSvg(const PDCode& pd, const std::string& title) {
-    validatePDCode(pd);
-    std::vector<std::vector<int>> cycles = canonicalCycles(pd);
-    const double pi = std::acos(-1.0);
-    const int cellW = 300;
-    const int cellH = 260;
-    const int cols = cycles.size() <= 1 ? 1 : 2;
-    const int rows = std::max<int>(1, static_cast<int>((cycles.size() + cols - 1) / cols));
-    const int tableW = 380;
-    const int width = cols * cellW + tableW + 60;
-    const int height = std::max(260, rows * cellH + 60);
+std::vector<int> diagramBorderSocketCandidates(const PDCode& pd) {
+    std::vector<int> candidates{-1};
+    if (pd.empty()) return candidates;
+
+    std::map<int, std::set<int>> graph;
+    for (const Crossing& crossing : pd) {
+        graph[crossing[0]].insert(crossing[2]);
+        graph[crossing[2]].insert(crossing[0]);
+        graph[crossing[1]].insert(crossing[3]);
+        graph[crossing[3]].insert(crossing[1]);
+    }
+
+    std::set<int> visited;
+    for (const auto& item : graph) {
+        const int start = item.first;
+        if (visited.count(start)) continue;
+
+        int representative = start;
+        std::vector<int> stack{start};
+        visited.insert(start);
+        while (!stack.empty()) {
+            const int now = stack.back();
+            stack.pop_back();
+            representative = std::min(representative, now);
+            for (int next : graph[now]) {
+                if (!visited.count(next)) {
+                    visited.insert(next);
+                    stack.push_back(next);
+                }
+            }
+        }
+        candidates.push_back(representative);
+    }
+
+    std::sort(candidates.begin(), candidates.end());
+    candidates.erase(std::unique(candidates.begin(), candidates.end()), candidates.end());
+    if (candidates.size() > 5) candidates.resize(5);
+    if (std::find(candidates.begin(), candidates.end(), -1) == candidates.end()) {
+        candidates.insert(candidates.begin(), -1);
+    }
+    return candidates;
+}
+
+DiagramMatrixBounds diagramMatrixBounds(const IntMatrix& matrix) {
+    DiagramMatrixBounds bounds;
+    for (int row = 0; row < matrix.getRowCnt(); ++row) {
+        for (int col = 0; col < matrix.getColCnt(); ++col) {
+            if (matrix.getPos(row, col) == 0) continue;
+            if (bounds.empty()) {
+                bounds.minRow = bounds.maxRow = row;
+                bounds.minCol = bounds.maxCol = col;
+            } else {
+                bounds.minRow = std::min(bounds.minRow, row);
+                bounds.maxRow = std::max(bounds.maxRow, row);
+                bounds.minCol = std::min(bounds.minCol, col);
+                bounds.maxCol = std::max(bounds.maxCol, col);
+            }
+        }
+    }
+    return bounds;
+}
+
+int diagramBitCount4(int mask) {
+    int count = 0;
+    for (int bit : {kDiagramTop, kDiagramRight, kDiagramBottom, kDiagramLeft}) {
+        if (mask & bit) ++count;
+    }
+    return count;
+}
+
+std::vector<int> diagramMaskDirections(int mask) {
+    std::vector<int> dirs;
+    for (int bit : {kDiagramTop, kDiagramRight, kDiagramBottom, kDiagramLeft}) {
+        if (mask & bit) dirs.push_back(bit);
+    }
+    return dirs;
+}
+
+int diagramOppositeDirection(int direction) {
+    switch (direction) {
+        case kDiagramTop: return kDiagramBottom;
+        case kDiagramRight: return kDiagramLeft;
+        case kDiagramBottom: return kDiagramTop;
+        case kDiagramLeft: return kDiagramRight;
+        default: return 0;
+    }
+}
+
+int diagramDirectionIndex(int direction) {
+    switch (direction) {
+        case kDiagramTop: return 0;
+        case kDiagramRight: return 1;
+        case kDiagramBottom: return 2;
+        case kDiagramLeft: return 3;
+        default: return -1;
+    }
+}
+
+std::pair<int, int> diagramStepCell(int row, int col, int direction) {
+    switch (direction) {
+        case kDiagramTop: return {row - 1, col};
+        case kDiagramRight: return {row, col + 1};
+        case kDiagramBottom: return {row + 1, col};
+        case kDiagramLeft: return {row, col - 1};
+        default: return {row, col};
+    }
+}
+
+int diagramLineMask(const IntMatrix& matrix, int row, int col) {
+    const int val = matrix.getPos(row, col);
+    if (val <= 0) return 0;
+
+    int mask = 0;
+    const int top = matrix.getPos(row - 1, col);
+    const int right = matrix.getPos(row, col + 1);
+    const int bottom = matrix.getPos(row + 1, col);
+    const int left = matrix.getPos(row, col - 1);
+    if (top == val || top < 0) mask |= kDiagramTop;
+    if (right == val || right < 0) mask |= kDiagramRight;
+    if (bottom == val || bottom < 0) mask |= kDiagramBottom;
+    if (left == val || left < 0) mask |= kDiagramLeft;
+    return mask;
+}
+
+bool isDiagramStraightMask(int mask) {
+    return mask == (kDiagramTop | kDiagramBottom) ||
+           mask == (kDiagramLeft | kDiagramRight);
+}
+
+bool isDiagramCornerMask(int mask) {
+    return mask == (kDiagramTop | kDiagramRight) ||
+           mask == (kDiagramRight | kDiagramBottom) ||
+           mask == (kDiagramBottom | kDiagramLeft) ||
+           mask == (kDiagramLeft | kDiagramTop);
+}
+
+double scoreDiagramMatrix(const IntMatrix& matrix) {
+    const DiagramMatrixBounds bounds = diagramMatrixBounds(matrix);
+    if (bounds.empty()) return 0.0;
+
+    const int rows = bounds.rows();
+    const int cols = bounds.cols();
+    const int area = rows * cols;
+    int nonZero = 0;
+    int turns = 0;
+    int unsupported = 0;
+    int endpointPenalty = 0;
+
+    for (int row = bounds.minRow; row <= bounds.maxRow; ++row) {
+        for (int col = bounds.minCol; col <= bounds.maxCol; ++col) {
+            const int val = matrix.getPos(row, col);
+            if (val == 0) continue;
+            ++nonZero;
+            if (val < 0) continue;
+
+            const int mask = diagramLineMask(matrix, row, col);
+            const int degree = diagramBitCount4(mask);
+            if (isDiagramCornerMask(mask)) ++turns;
+            if (!isDiagramCornerMask(mask) && !isDiagramStraightMask(mask)) ++unsupported;
+            if (degree != 2) endpointPenalty += std::abs(degree - 2);
+        }
+    }
+
+    const int blanks = area - nonZero;
+    const int imbalance = std::abs(rows - cols);
+    return static_cast<double>(area) * 1000.0 +
+           static_cast<double>(blanks) * 25.0 +
+           static_cast<double>(turns) * 12.0 +
+           static_cast<double>(imbalance) * 5.0 +
+           static_cast<double>(unsupported) * 100000.0 +
+           static_cast<double>(endpointPenalty) * 50000.0;
+}
+
+IntMatrix buildOptimizedDiagramMatrix(const PDCode& normalizedPd) {
+    constexpr unsigned int kSeedStart = 42;
+    constexpr int kSeedAttemptsPerBorder = 64;
+    constexpr int kMinimumAttemptsAfterSuccess = 16;
+    constexpr auto kOptimizeTimeBudget = std::chrono::milliseconds(2000);
+
+    const std::string pdInput = formatPDCode(normalizedPd);
+    const std::vector<int> borderSockets = diagramBorderSocketCandidates(normalizedPd);
+    PdToDiagram2d converter;
+    std::optional<DiagramLayoutCandidate> best;
+    std::string lastError;
+    int attempts = 0;
+    const auto started = std::chrono::steady_clock::now();
+
+    for (int borderSocket : borderSockets) {
+        for (int seedOffset = 0; seedOffset < kSeedAttemptsPerBorder; ++seedOffset) {
+            const unsigned int seed = kSeedStart + static_cast<unsigned int>(seedOffset);
+            ++attempts;
+            try {
+                std::stringstream input(pdInput);
+                auto layout = converter.tryConvertOnce(seed, borderSocket, input);
+                IntMatrix matrix = std::get<1>(layout);
+                const double score = scoreDiagramMatrix(matrix);
+                if (!best || score < best->score) {
+                    best.emplace(std::move(matrix), score, seed, borderSocket);
+                }
+            } catch (const std::exception& error) {
+                lastError = error.what();
+            } catch (...) {
+                lastError = "unknown layout error";
+            }
+
+            if (best && attempts >= kMinimumAttemptsAfterSuccess &&
+                std::chrono::steady_clock::now() - started >= kOptimizeTimeBudget) {
+                return best->matrix;
+            }
+        }
+    }
+
+    if (!best) {
+        std::string message = "pd-code-to-diagram could not lay out this PD code";
+        if (!lastError.empty()) message += ": " + lastError;
+        throw std::runtime_error(message);
+    }
+    return best->matrix;
+}
+
+void appendSvgLine(std::ostringstream& svg,
+                   double x1,
+                   double y1,
+                   double x2,
+                   double y2) {
+    svg << "<line class=\"strand\" x1=\"" << svgNumber(x1)
+        << "\" y1=\"" << svgNumber(y1)
+        << "\" x2=\"" << svgNumber(x2)
+        << "\" y2=\"" << svgNumber(y2) << "\"/>\n";
+}
+
+SvgPoint diagramPortPoint(double x, double y, double tile, int direction) {
+    const double midX = x + tile / 2.0;
+    const double midY = y + tile / 2.0;
+    switch (direction) {
+        case kDiagramTop: return {midX, y};
+        case kDiagramRight: return {x + tile, midY};
+        case kDiagramBottom: return {midX, y + tile};
+        case kDiagramLeft: return {x, midY};
+        default: return {midX, midY};
+    }
+}
+
+int diagramArcSweepFlag(int entryDirection, int exitDirection) {
+    const int entryIndex = diagramDirectionIndex(entryDirection);
+    const int exitIndex = diagramDirectionIndex(exitDirection);
+    if (entryIndex < 0 || exitIndex < 0) return 0;
+    return exitIndex == (entryIndex + 1) % 4 ? 0 : 1;
+}
+
+void appendSvgCornerArc(std::ostringstream& svg,
+                        double x,
+                        double y,
+                        double tile,
+                        int entryDirection,
+                        int exitDirection) {
+    const SvgPoint start = diagramPortPoint(x, y, tile, entryDirection);
+    const SvgPoint end = diagramPortPoint(x, y, tile, exitDirection);
+    const double radius = tile / 2.0;
+    const int sweep = diagramArcSweepFlag(entryDirection, exitDirection);
+    svg << "<path class=\"strand\" d=\"M " << svgNumber(start.x) << " " << svgNumber(start.y)
+        << " A " << svgNumber(radius) << " " << svgNumber(radius)
+        << " 0 0 " << sweep
+        << " " << svgNumber(end.x) << " " << svgNumber(end.y) << "\"/>\n";
+}
+
+void appendSvgRegularTile(std::ostringstream& svg,
+                          const IntMatrix& matrix,
+                          int row,
+                          int col,
+                          double x,
+                          double y,
+                          double tile) {
+    const double midX = x + tile / 2.0;
+    const double midY = y + tile / 2.0;
+    const int mask = diagramLineMask(matrix, row, col);
+
+    switch (mask) {
+        case kDiagramTop | kDiagramRight:
+            appendSvgCornerArc(svg, x, y, tile, kDiagramTop, kDiagramRight);
+            return;
+        case kDiagramRight | kDiagramBottom:
+            appendSvgCornerArc(svg, x, y, tile, kDiagramRight, kDiagramBottom);
+            return;
+        case kDiagramBottom | kDiagramLeft:
+            appendSvgCornerArc(svg, x, y, tile, kDiagramBottom, kDiagramLeft);
+            return;
+        case kDiagramLeft | kDiagramTop:
+            appendSvgCornerArc(svg, x, y, tile, kDiagramLeft, kDiagramTop);
+            return;
+        case kDiagramTop | kDiagramBottom:
+            appendSvgLine(svg, midX, y, midX, y + tile);
+            return;
+        case kDiagramLeft | kDiagramRight:
+            appendSvgLine(svg, x, midY, x + tile, midY);
+            return;
+        default:
+            break;
+    }
+
+    if (mask & kDiagramTop) appendSvgLine(svg, midX, midY, midX, y);
+    if (mask & kDiagramRight) appendSvgLine(svg, midX, midY, x + tile, midY);
+    if (mask & kDiagramBottom) appendSvgLine(svg, midX, midY, midX, y + tile);
+    if (mask & kDiagramLeft) appendSvgLine(svg, midX, midY, x, midY);
+}
+
+bool isTraceableDiagramCell(const IntMatrix& matrix, int row, int col) {
+    if (matrix.getPos(row, col) <= 0) return false;
+    const int mask = diagramLineMask(matrix, row, col);
+    return diagramBitCount4(mask) == 2 &&
+           (isDiagramStraightMask(mask) || isDiagramCornerMask(mask));
+}
+
+bool sameTraceableDiagramArcNeighbor(const IntMatrix& matrix,
+                                     int row,
+                                     int col,
+                                     int direction) {
+    const int value = matrix.getPos(row, col);
+    if (value <= 0) return false;
+    const auto next = diagramStepCell(row, col, direction);
+    if (matrix.getPos(next.first, next.second) != value) return false;
+    return isTraceableDiagramCell(matrix, next.first, next.second);
+}
+
+int otherTraceDirection(const IntMatrix& matrix, int row, int col, int entryDirection) {
+    const std::vector<int> dirs = diagramMaskDirections(diagramLineMask(matrix, row, col));
+    if (dirs.size() != 2) return 0;
+    if (dirs[0] == entryDirection) return dirs[1];
+    if (dirs[1] == entryDirection) return dirs[0];
+    return 0;
+}
+
+struct DiagramTraceCursor {
+    int row = 0;
+    int col = 0;
+    int entryDirection = 0;
+};
+
+DiagramTraceCursor rewindDiagramTraceStart(const IntMatrix& matrix,
+                                           int row,
+                                           int col,
+                                           int entryDirection) {
+    DiagramTraceCursor cursor{row, col, entryDirection};
+    const int guardLimit = std::max(4, matrix.getRowCnt() * matrix.getColCnt() + 4);
+    std::set<std::tuple<int, int, int>> seen;
+
+    for (int guard = 0; guard < guardLimit; ++guard) {
+        const auto state = std::make_tuple(cursor.row, cursor.col, cursor.entryDirection);
+        if (!seen.insert(state).second) break;
+        if (!sameTraceableDiagramArcNeighbor(matrix, cursor.row, cursor.col, cursor.entryDirection)) break;
+
+        const auto prev = diagramStepCell(cursor.row, cursor.col, cursor.entryDirection);
+        const int connectedSide = diagramOppositeDirection(cursor.entryDirection);
+        const int previousEntry = otherTraceDirection(matrix, prev.first, prev.second, connectedSide);
+        if (previousEntry == 0) break;
+        cursor = DiagramTraceCursor{prev.first, prev.second, previousEntry};
+    }
+
+    return cursor;
+}
+
+void appendSvgTraceSegment(std::ostringstream& path,
+                           double x,
+                           double y,
+                           double tile,
+                           int entryDirection,
+                           int exitDirection) {
+    const SvgPoint end = diagramPortPoint(x, y, tile, exitDirection);
+    if ((entryDirection == kDiagramTop && exitDirection == kDiagramBottom) ||
+        (entryDirection == kDiagramBottom && exitDirection == kDiagramTop) ||
+        (entryDirection == kDiagramLeft && exitDirection == kDiagramRight) ||
+        (entryDirection == kDiagramRight && exitDirection == kDiagramLeft)) {
+        path << " L " << svgNumber(end.x) << " " << svgNumber(end.y);
+        return;
+    }
+
+    const double radius = tile / 2.0;
+    const int sweep = diagramArcSweepFlag(entryDirection, exitDirection);
+    path << " A " << svgNumber(radius) << " " << svgNumber(radius)
+         << " 0 0 " << sweep
+         << " " << svgNumber(end.x) << " " << svgNumber(end.y);
+}
+
+void appendSvgRegularTracedPaths(std::ostringstream& svg,
+                                 const IntMatrix& matrix,
+                                 const DiagramMatrixBounds& bounds,
+                                 double padding,
+                                 double tile,
+                                 std::set<std::pair<int, int>>& tracedCells) {
+    for (int row = bounds.minRow; row <= bounds.maxRow; ++row) {
+        for (int col = bounds.minCol; col <= bounds.maxCol; ++col) {
+            if (!isTraceableDiagramCell(matrix, row, col)) continue;
+            if (tracedCells.count({row, col})) continue;
+
+            const std::vector<int> dirs = diagramMaskDirections(diagramLineMask(matrix, row, col));
+            if (dirs.size() != 2) continue;
+            DiagramTraceCursor cursor = rewindDiagramTraceStart(matrix, row, col, dirs[0]);
+            if (tracedCells.count({cursor.row, cursor.col})) {
+                cursor = rewindDiagramTraceStart(matrix, row, col, dirs[1]);
+            }
+            if (tracedCells.count({cursor.row, cursor.col})) continue;
+
+            const double startX = padding + static_cast<double>(cursor.col - bounds.minCol) * tile;
+            const double startY = padding + static_cast<double>(cursor.row - bounds.minRow) * tile;
+            const SvgPoint start = diagramPortPoint(startX, startY, tile, cursor.entryDirection);
+
+            std::ostringstream path;
+            path << "M " << svgNumber(start.x) << " " << svgNumber(start.y);
+            bool wroteSegment = false;
+
+            const int guardLimit = std::max(4, matrix.getRowCnt() * matrix.getColCnt() + 4);
+            for (int guard = 0; guard < guardLimit; ++guard) {
+                if (!isTraceableDiagramCell(matrix, cursor.row, cursor.col)) break;
+                if (tracedCells.count({cursor.row, cursor.col})) break;
+                tracedCells.insert({cursor.row, cursor.col});
+
+                const int exitDirection = otherTraceDirection(matrix, cursor.row, cursor.col, cursor.entryDirection);
+                if (exitDirection == 0) break;
+
+                const double x = padding + static_cast<double>(cursor.col - bounds.minCol) * tile;
+                const double y = padding + static_cast<double>(cursor.row - bounds.minRow) * tile;
+                appendSvgTraceSegment(path, x, y, tile, cursor.entryDirection, exitDirection);
+                wroteSegment = true;
+
+                if (!sameTraceableDiagramArcNeighbor(matrix, cursor.row, cursor.col, exitDirection)) break;
+                const auto next = diagramStepCell(cursor.row, cursor.col, exitDirection);
+                if (tracedCells.count({next.first, next.second})) break;
+                cursor = DiagramTraceCursor{
+                    next.first,
+                    next.second,
+                    diagramOppositeDirection(exitDirection),
+                };
+            }
+
+            if (wroteSegment) {
+                svg << "<path class=\"strand\" d=\"" << path.str() << "\"/>\n";
+            }
+        }
+    }
+}
+
+void appendSvgCrossingTile(std::ostringstream& svg,
+                           int crossingValue,
+                           double x,
+                           double y,
+                           double tile) {
+    const double midX = x + tile / 2.0;
+    const double midY = y + tile / 2.0;
+    const double gapRadius = 6.0;
+
+    if (crossingValue == -1) {
+        appendSvgLine(svg, midX, y, midX, y + tile);
+        svg << "<circle class=\"gap\" cx=\"" << svgNumber(midX)
+            << "\" cy=\"" << svgNumber(midY)
+            << "\" r=\"" << svgNumber(gapRadius) << "\"/>\n";
+        appendSvgLine(svg, x, midY, x + tile, midY);
+    } else if (crossingValue == -2) {
+        appendSvgLine(svg, x, midY, x + tile, midY);
+        svg << "<circle class=\"gap\" cx=\"" << svgNumber(midX)
+            << "\" cy=\"" << svgNumber(midY)
+            << "\" r=\"" << svgNumber(gapRadius) << "\"/>\n";
+        appendSvgLine(svg, midX, y, midX, y + tile);
+    }
+}
+
+void appendSvgArcLabel(std::ostringstream& svg,
+                       int value,
+                       double x,
+                       double y,
+                       const char* anchor) {
+    if (value <= 0) return;
+    svg << "<text class=\"arc-label\" x=\"" << svgNumber(x)
+        << "\" y=\"" << svgNumber(y)
+        << "\" text-anchor=\"" << anchor << "\">"
+        << value << "</text>\n";
+}
+
+void appendSvgCrossingLabels(std::ostringstream& svg,
+                             const IntMatrix& matrix,
+                             int row,
+                             int col,
+                             double x,
+                             double y,
+                             double tile) {
+    constexpr double margin = 3.0;
+    constexpr double fontBaseline = 8.0;
+
+    appendSvgArcLabel(svg, matrix.getPos(row - 1, col), x + tile - margin, y - margin, "end");
+    appendSvgArcLabel(svg, matrix.getPos(row, col + 1), x + tile + margin, y + margin + fontBaseline, "start");
+    appendSvgArcLabel(svg, matrix.getPos(row + 1, col), x + margin, y + tile + margin + fontBaseline, "start");
+    appendSvgArcLabel(svg, matrix.getPos(row, col - 1), x - margin, y + tile - margin, "end");
+}
+
+std::string renderUnknotSvg(const std::string& title) {
+    constexpr int width = 180;
+    constexpr int height = 150;
+    std::ostringstream svg;
+    svg << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
+    svg << "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"" << width
+        << "\" height=\"" << height << "\" viewBox=\"0 0 " << width << " " << height
+        << "\" role=\"img\" aria-label=\"" << xmlEscape(title) << "\">\n";
+    svg << "<title>" << xmlEscape(title) << "</title>\n";
+    svg << "<rect width=\"100%\" height=\"100%\" fill=\"white\"/>\n";
+    svg << "<circle cx=\"90\" cy=\"75\" r=\"48\" fill=\"none\" stroke=\"#111827\""
+        << " stroke-width=\"4\"/>\n";
+    svg << "</svg>\n";
+    return svg.str();
+}
+
+std::string renderDiagramErrorSvg(const std::string& title, const std::string& error) {
+    constexpr int width = 520;
+    constexpr int height = 140;
+    std::ostringstream svg;
+    svg << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
+    svg << "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"" << width
+        << "\" height=\"" << height << "\" viewBox=\"0 0 " << width << " " << height
+        << "\" role=\"img\" aria-label=\"" << xmlEscape(title) << "\">\n";
+    svg << "<title>" << xmlEscape(title) << "</title>\n";
+    svg << "<rect width=\"100%\" height=\"100%\" fill=\"white\"/>\n";
+    svg << "<text x=\"20\" y=\"38\" font-family=\"Arial,DejaVu Sans,sans-serif\""
+        << " font-size=\"16\" font-weight=\"700\" fill=\"#991b1b\">PD diagram layout failed</text>\n";
+    svg << "<text x=\"20\" y=\"70\" font-family=\"Arial,DejaVu Sans,sans-serif\""
+        << " font-size=\"12\" fill=\"#374151\">" << xmlEscape(error).substr(0, 220) << "</text>\n";
+    svg << "</svg>\n";
+    return svg.str();
+}
+
+std::string renderPdMatrixSvg(const IntMatrix& matrix, const std::string& title) {
+    const DiagramMatrixBounds bounds = diagramMatrixBounds(matrix);
+    if (bounds.empty()) return renderUnknotSvg(title);
+
+    constexpr double tile = 30.0;
+    constexpr double padding = 14.0;
+    const int rows = bounds.rows();
+    const int cols = bounds.cols();
+    const int width = static_cast<int>(cols * tile + padding * 2.0);
+    const int height = static_cast<int>(rows * tile + padding * 2.0);
 
     std::ostringstream svg;
     svg << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
     svg << "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"" << width
-        << "\" height=\"" << height << "\" viewBox=\"0 0 " << width << " " << height << "\">\n";
+        << "\" height=\"" << height << "\" viewBox=\"0 0 " << width << " " << height
+        << "\" role=\"img\" aria-label=\"" << xmlEscape(title) << "\">\n";
+    svg << "<title>" << xmlEscape(title) << "</title>\n";
     svg << "<rect width=\"100%\" height=\"100%\" fill=\"white\"/>\n";
-    svg << "<style>text{font-family:Arial,DejaVu Sans,sans-serif;font-size:13px}"
-        << ".small{font-size:11px}.title{font-size:16px;font-weight:bold}"
-        << ".strand{fill:none;stroke:#111;stroke-width:3;stroke-linejoin:round}"
-        << ".socket{fill:#fff;stroke:#b00020;stroke-width:1.5}</style>\n";
-    svg << "<text class=\"title\" x=\"20\" y=\"28\">" << xmlEscape(title) << "</text>\n";
+    svg << "<style>"
+        << ".strand{fill:none;stroke:#111827;stroke-width:4;stroke-linecap:butt;"
+        << "stroke-linejoin:round;shape-rendering:geometricPrecision}"
+        << ".gap{fill:white;stroke:white;stroke-width:0}"
+        << ".arc-label{font-family:Arial,DejaVu Sans,sans-serif;font-size:9px;"
+        << "font-weight:700;fill:#dc2626;stroke:white;stroke-width:3px;"
+        << "paint-order:stroke fill;stroke-linejoin:round}"
+        << "</style>\n";
 
-    if (cycles.empty()) {
-        svg << "<circle cx=\"130\" cy=\"135\" r=\"70\" fill=\"none\" stroke=\"#111\" stroke-width=\"3\"/>\n";
-        svg << "<text x=\"88\" y=\"140\">unknot / empty PD</text>\n";
-    }
+    std::set<std::pair<int, int>> tracedCells;
+    appendSvgRegularTracedPaths(svg, matrix, bounds, padding, tile, tracedCells);
 
-    for (size_t c = 0; c < cycles.size(); ++c) {
-        int gridX = static_cast<int>(c % cols);
-        int gridY = static_cast<int>(c / cols);
-        double ox = 30 + gridX * cellW;
-        double oy = 50 + gridY * cellH;
-        double cx = ox + cellW / 2.0;
-        double cy = oy + cellH / 2.0;
-        double rx = 95;
-        double ry = 75;
-        const auto& cycle = cycles[c];
-        std::vector<SvgPoint> points;
-        points.reserve(cycle.size());
-        for (size_t i = 0; i < cycle.size(); ++i) {
-            double angle = -pi / 2.0 + 2.0 * pi * static_cast<double>(i) / std::max<size_t>(1, cycle.size());
-            points.push_back({cx + rx * std::cos(angle), cy + ry * std::sin(angle)});
-        }
-
-        svg << "<text x=\"" << svgNumber(ox + 8) << "\" y=\"" << svgNumber(oy + 20)
-            << "\">component " << (c + 1) << "</text>\n";
-        if (points.size() == 1) {
-            svg << "<circle class=\"strand\" cx=\"" << svgNumber(points[0].x)
-                << "\" cy=\"" << svgNumber(points[0].y) << "\" r=\"45\"/>\n";
-        } else if (!points.empty()) {
-            svg << "<polyline class=\"strand\" points=\"";
-            for (const SvgPoint& p : points) svg << svgNumber(p.x) << "," << svgNumber(p.y) << " ";
-            svg << svgNumber(points[0].x) << "," << svgNumber(points[0].y) << "\"/>\n";
-        }
-
-        for (size_t i = 0; i < points.size(); ++i) {
-            const SvgPoint& p = points[i];
-            svg << "<circle class=\"socket\" cx=\"" << svgNumber(p.x) << "\" cy=\""
-                << svgNumber(p.y) << "\" r=\"9\"/>\n";
-            svg << "<text class=\"small\" text-anchor=\"middle\" x=\"" << svgNumber(p.x)
-                << "\" y=\"" << svgNumber(p.y + 4) << "\">" << cycle[i] << "</text>\n";
+    for (int row = bounds.minRow; row <= bounds.maxRow; ++row) {
+        for (int col = bounds.minCol; col <= bounds.maxCol; ++col) {
+            const int value = matrix.getPos(row, col);
+            if (value <= 0) continue;
+            if (tracedCells.count({row, col})) continue;
+            const double x = padding + static_cast<double>(col - bounds.minCol) * tile;
+            const double y = padding + static_cast<double>(row - bounds.minRow) * tile;
+            appendSvgRegularTile(svg, matrix, row, col, x, y, tile);
         }
     }
 
-    int tableX = cols * cellW + 35;
-    svg << "<text class=\"title\" x=\"" << tableX << "\" y=\"58\">PD crossings</text>\n";
-    int y = 82;
-    for (size_t i = 0; i < pd.size(); ++i) {
-        svg << "<text x=\"" << tableX << "\" y=\"" << y << "\">X" << (i + 1)
-            << " (" << crossingSignText(pd[i]) << ") = ["
-            << pd[i][0] << ", " << pd[i][1] << ", " << pd[i][2] << ", " << pd[i][3] << "]</text>\n";
-        y += 20;
+    for (int row = bounds.minRow; row <= bounds.maxRow; ++row) {
+        for (int col = bounds.minCol; col <= bounds.maxCol; ++col) {
+            const int value = matrix.getPos(row, col);
+            if (value != -1 && value != -2) continue;
+            const double x = padding + static_cast<double>(col - bounds.minCol) * tile;
+            const double y = padding + static_cast<double>(row - bounds.minRow) * tile;
+            appendSvgCrossingTile(svg, value, x, y, tile);
+        }
     }
+
+    for (int row = bounds.minRow; row <= bounds.maxRow; ++row) {
+        for (int col = bounds.minCol; col <= bounds.maxCol; ++col) {
+            const int value = matrix.getPos(row, col);
+            if (value != -1 && value != -2) continue;
+            const double x = padding + static_cast<double>(col - bounds.minCol) * tile;
+            const double y = padding + static_cast<double>(row - bounds.minRow) * tile;
+            appendSvgCrossingLabels(svg, matrix, row, col, x, y, tile);
+        }
+    }
+
     svg << "</svg>\n";
     return svg.str();
+}
+
+std::string renderPDCodeSvg(const PDCode& pd, const std::string& title) {
+    try {
+        if (pd.empty()) return renderUnknotSvg(title);
+        PDCode diagramPd = renumberPdLabelsForDiagram(pd);
+        const IntMatrix matrix = buildOptimizedDiagramMatrix(diagramPd);
+        return renderPdMatrixSvg(matrix, title);
+    } catch (const std::exception& error) {
+        return renderDiagramErrorSvg(title, error.what());
+    }
 }
 
 void generateDiagramSvgForFile(const fs::path& txtPath, bool force) {
@@ -1637,6 +2242,7 @@ void usage() {
         << "  cpp_com_link_gen process-one FILE\n"
         << "  cpp_com_link_gen legacy --dir DIR --mod M --res R\n"
         << "  cpp_com_link_gen pd --file LINK_REP.txt\n"
+        << "  cpp_com_link_gen svg (--pd \"[[1,5,2,4],...]\" | --file generated.txt) --out diagram.svg\n"
         << "  cpp_com_link_gen kh --pd \"[[1,5,2,4],...]\"\n"
         << "  cpp_com_link_gen kh-all-orientations --pd \"[[1,5,2,4],...]\"\n";
 }
@@ -1717,6 +2323,18 @@ int runCommand(std::vector<std::string> args) {
         fs::path file = optionPath(args, "--file", {});
         if (file.empty()) throw std::runtime_error("pd needs --file");
         std::cout << formatPDCode(linkRepToPDCode(readFile(file))) << "\n";
+    } else if (command == "svg") {
+        auto pdText = takeOption(args, "--pd");
+        fs::path file = optionPath(args, "--file", {});
+        fs::path out = optionPath(args, "--out", {});
+        if (!pdText && file.empty()) throw std::runtime_error("svg needs --pd or --file");
+        if (pdText && !file.empty()) throw std::runtime_error("svg accepts only one of --pd and --file");
+        if (out.empty()) throw std::runtime_error("svg needs --out");
+
+        PDCode pd = pdText ? parsePDCode(*pdText)
+                           : parsePDCode(pdCodeKeyFromContent(readFile(file), file));
+        const std::string title = file.empty() ? out.filename().string() : file.filename().string();
+        writeFile(out, renderPDCodeSvg(pd, title));
     } else if (command == "kh") {
         auto pdText = takeOption(args, "--pd");
         if (!pdText) throw std::runtime_error("kh needs --pd");
