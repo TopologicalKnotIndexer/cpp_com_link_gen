@@ -216,18 +216,26 @@ parallel. It is created immediately and flushed as ordered results become
 available. If a file fails to parse or Sage fails to compute its Khovanov
 polynomial, that file still gets a line and the polynomial field is replaced by a
 single-line `ERROR[...]` value. Progress is printed every `progress_every`
-completed output lines and includes cache hits, so the progress bar tracks the
-final output file rather than only newly computed unique PD codes.
+completed selected files and includes resumed rows and cache hits.
+
+The exporter resumes interrupted runs by default. On startup it reads the
+existing output file, accepts only the longest ordered prefix whose lines match
+the selected filenames, truncates any partial or mismatched trailing bytes, and
+then appends from the next missing line. This is intended for `Ctrl+C` recovery:
+rerunning the same command with the same selected file range continues from the
+last complete synced output line. Pass `resume_output=False` to overwrite the
+output file from scratch.
 
 For speed, the exporter computes duplicate `PD_CODE` values only once by
 default and writes the result to every matching file line. It also keeps a
 persistent success cache at `output_path + ".cache.json"` by default, so reruns
 skip previously computed `PD_CODE` values; pass `cache_path=None` to disable
 that cache. It schedules uncached jobs by descending crossing count to reduce
-parallel tail latency. It uses Python `flush()` for live file visibility but
-does not call `fsync()` by default; pass `fsync_every=100` or another positive
-line count only if you need periodic disk syncs. Keep `chunksize=1` unless a
-benchmark shows your selected range has very uniform cost.
+parallel tail latency. It uses Python `flush()` and `fsync()` after every
+ordered write batch by default (`fsync_every=1`) so the output file is visible
+and durable during long runs; pass `fsync_every=0` if you only need Python
+flushes. Keep `chunksize=1` unless a benchmark shows your selected range has
+very uniform cost.
 
 ```sage
 write_sage_pd_khovanov_directory(

@@ -772,6 +772,14 @@ def _progress_bar(done, total, width=28):
     return "[{}{}] {:6.2f}%".format("#" * filled, "." * (width - filled), 100.0 * done / total)
 
 
+def _line_without_newline(text):
+    if text.endswith("\n"):
+        text = text[:-1]
+    if text.endswith("\r"):
+        text = text[:-1]
+    return text
+
+
 def _output_label_for_path(data_dir, path, recursive=False):
     if recursive:
         return os.path.relpath(path, data_dir).replace(os.sep, "/")
@@ -854,6 +862,86 @@ def _scheduled_pd_tasks(pd_jobs, schedule):
     return [(key, item["pd_code"]) for key, item in items]
 
 
+def _read_resume_output_prefix(output_path, file_records):
+    results = [None] * len(file_records)
+    if not os.path.isfile(output_path):
+        return {
+            "results": results,
+            "resumed": 0,
+            "truncate_at": 0,
+            "truncated_bytes": 0,
+            "existing_size": 0,
+            "stop_reason": None,
+        }
+
+    existing_size = os.path.getsize(output_path)
+    resumed = 0
+    truncate_at = 0
+    stop_reason = None
+
+    with open(output_path, "rb") as fp:
+        while resumed < len(file_records):
+            raw = fp.readline()
+            if not raw:
+                break
+            end_offset = fp.tell()
+            if not raw.endswith(b"\n"):
+                stop_reason = "partial trailing line at output line {}".format(resumed + 1)
+                break
+            try:
+                line = _line_without_newline(raw.decode("utf-8"))
+            except UnicodeDecodeError as exc:
+                stop_reason = "invalid utf-8 at output line {}: {}".format(resumed + 1, exc)
+                break
+
+            record = file_records[resumed]
+            prefix = "{}: ".format(record["label"])
+            if not line.startswith(prefix):
+                stop_reason = "label mismatch at output line {}; expected prefix {!r}".format(
+                    resumed + 1, prefix
+                )
+                break
+
+            homology = line[len(prefix):]
+            is_error = homology.startswith("ERROR[")
+            results[resumed] = {
+                "ok": not is_error,
+                "index": resumed,
+                "path": record["path"],
+                "label": record["label"],
+                "homology": homology,
+                "error": homology if is_error else None,
+                "resumed": True,
+            }
+            resumed += 1
+            truncate_at = end_offset
+
+        if resumed == len(file_records):
+            extra = fp.read(1)
+            if extra:
+                stop_reason = "extra trailing output after selected files"
+
+    return {
+        "results": results,
+        "resumed": resumed,
+        "truncate_at": truncate_at,
+        "truncated_bytes": max(0, existing_size - truncate_at),
+        "existing_size": existing_size,
+        "stop_reason": stop_reason,
+    }
+
+
+def _truncate_file_bytes(path, size_bytes, fsync=False):
+    with open(path, "r+b") as fp:
+        fp.truncate(int(size_bytes))
+        fp.flush()
+        if fsync:
+            try:
+                os.fsync(fp.fileno())
+            except OSError:
+                pass
+
+
 def write_sage_pd_khovanov_directory(
     data_dir,
     output_path,
@@ -870,10 +958,11 @@ def write_sage_pd_khovanov_directory(
     progress_bar_width=28,
     deduplicate_pd=True,
     flush_every=1,
-    fsync_every=0,
+    fsync_every=1,
     cache_path="auto",
     cache_flush_every=25,
     schedule="crossings_desc",
+    resume_output=True,
 ):
     """
     Compute one Sage Khovanov polynomial per txt file and write ordered lines.
@@ -896,12 +985,15 @@ def write_sage_pd_khovanov_directory(
     Polynomial terms are sorted by ascending ``t`` exponent, then ascending
     ``q`` exponent.  The output order is the selected file order, not worker
     completion order.
+    If ``resume_output`` is true and ``output_path`` already exists, the
+    exporter resumes the longest valid ordered output prefix and truncates any
+    partial or mismatched trailing data before appending new lines.
     Progress is printed every ``progress_every`` completed output file lines,
     including cache hits and duplicate PD rows.
     The output file is opened immediately and flushed as soon as the next
     ordered result line is available, so it can be watched while Sage runs.
-    By default this uses ``flush`` but not ``fsync``; set ``fsync_every`` to a
-    positive line count if you need periodic disk syncs.
+    By default this uses both ``flush`` and ``fsync`` for every ordered write
+    batch; set ``fsync_every=0`` if you only need Python flushes.
     If parsing or Sage computation fails for a file, the corresponding output
     line is still written, with the polynomial field replaced by a single-line
     ``ERROR[...]`` value.
@@ -933,19 +1025,43 @@ def write_sage_pd_khovanov_directory(
         for index, path in enumerate(paths)
     ]
 
-    results = [None] * len(file_records)
+    resume_info = _read_resume_output_prefix(output_path, file_records) if resume_output else {
+        "results": [None] * len(file_records),
+        "resumed": 0,
+        "truncate_at": 0,
+        "truncated_bytes": 0,
+        "existing_size": 0,
+        "stop_reason": None,
+    }
+    results = resume_info["results"]
+    resume_count = int(resume_info["resumed"])
+    resume_error_count = sum(
+        1 for item in results[:resume_count] if item is not None and item.get("error")
+    )
+
     pd_jobs = {}
     selected_pd_keys = set()
+    pending_pd_keys = set()
     parse_error_count = 0
     cache_hit_count = 0
+    resume_cache_dirty_count = 0
     for record in file_records:
         index = int(record["index"])
         path = record["path"]
         label = record["label"]
+        resumed_item = results[index]
         try:
             pd_code = parse_pd_code_from_file(path)
             pd_cache_key = _pd_cache_key(pd_code)
             selected_pd_keys.add(pd_cache_key)
+            if resumed_item is not None:
+                if cache_path and not resumed_item.get("error"):
+                    if polynomial_cache.get(pd_cache_key) != resumed_item["homology"]:
+                        polynomial_cache[pd_cache_key] = resumed_item["homology"]
+                        resume_cache_dirty_count += 1
+                continue
+
+            pending_pd_keys.add(pd_cache_key)
             if pd_cache_key in polynomial_cache:
                 cache_hit_count += 1
                 results[index] = {
@@ -968,6 +1084,8 @@ def write_sage_pd_khovanov_directory(
                 }
             pd_jobs[key]["indices"].append(index)
         except Exception as exc:
+            if resumed_item is not None:
+                continue
             parse_error_count += 1
             results[index] = {
                 "ok": False,
@@ -982,13 +1100,18 @@ def write_sage_pd_khovanov_directory(
             }
 
     tasks = _scheduled_pd_tasks(pd_jobs, schedule)
+    pending_file_count = len(file_records) - resume_count
     selected_unique_pd_count = len(selected_pd_keys)
-    duplicate_count = len(file_records) - parse_error_count - selected_unique_pd_count
+    pending_unique_pd_count = len(pending_pd_keys)
+    duplicate_count = pending_file_count - parse_error_count - pending_unique_pd_count
 
     print(
-        "Sage PD Khovanov export starting: files={} unique_pd={} cached={} to_compute={} duplicates={} workers={} start_method={} output={}".format(
+        "Sage PD Khovanov export starting: files={} resumed={} pending={} unique_pd={} pending_unique_pd={} cached={} to_compute={} duplicates={} workers={} start_method={} output={}".format(
             len(file_records),
+            resume_count,
+            pending_file_count,
             selected_unique_pd_count,
+            pending_unique_pd_count,
             cache_hit_count,
             len(tasks),
             duplicate_count,
@@ -999,13 +1122,22 @@ def write_sage_pd_khovanov_directory(
     )
     if cache_path:
         print("  cache={} entries={}".format(cache_path, cache_start_count))
+    if resume_output and resume_info["existing_size"]:
+        print(
+            "  resume output={} resumed={} truncated_bytes={}{}".format(
+                output_path,
+                resume_count,
+                resume_info["truncated_bytes"],
+                " reason={}".format(resume_info["stop_reason"]) if resume_info["stop_reason"] else "",
+            )
+        )
 
     started_at = time.time()
     checked = 0
-    written = 0
-    completed_files = parse_error_count + cache_hit_count
-    error_count = parse_error_count
-    cache_dirty_count = 0
+    written = resume_count
+    completed_files = resume_count + parse_error_count + cache_hit_count
+    error_count = resume_error_count + parse_error_count
+    cache_dirty_count = resume_cache_dirty_count
     pool = None
     pool_closed = False
     output_dir = os.path.dirname(output_path)
@@ -1056,8 +1188,9 @@ def write_sage_pd_khovanov_directory(
         speed = completed_files / elapsed if elapsed > 0 else 0.0
         remaining = len(file_records) - completed_files
         print(
-            "  {} computed_unique {}/{} cached={} completed_files={}/{} written={} remaining={} errors={} speed={:.2f} files/s".format(
+            "  {} resumed={} computed_unique {}/{} cached={} completed_files={}/{} written={} remaining={} errors={} speed={:.2f} files/s".format(
                 _progress_bar(completed_files, len(file_records), progress_bar_width),
+                resume_count,
                 checked,
                 len(tasks),
                 cache_hit_count,
@@ -1075,7 +1208,10 @@ def write_sage_pd_khovanov_directory(
                 next_progress += progress_every
 
     try:
-        with open(output_path, "w", encoding="utf-8", newline="\n") as fp:
+        if resume_output and resume_info["truncated_bytes"] > 0:
+            _truncate_file_bytes(output_path, resume_info["truncate_at"], fsync=(fsync_every > 0))
+        output_mode = "a" if resume_output else "w"
+        with open(output_path, output_mode, encoding="utf-8", newline="\n") as fp:
             _flush_output_file(fp, fsync=False)
             write_ready(fp)
             print_progress(force=completed_files > 0)
@@ -1146,9 +1282,11 @@ def write_sage_pd_khovanov_directory(
 
     elapsed = time.time() - started_at
     print(
-        "Sage PD Khovanov export written: files={} unique_pd={} cached={} computed_unique={} duplicates={} errors={} output={} elapsed={:.1f}s".format(
+        "Sage PD Khovanov export written: files={} resumed={} unique_pd={} pending_unique_pd={} cached={} computed_unique={} duplicates={} errors={} output={} elapsed={:.1f}s".format(
             len(results),
+            resume_count,
             selected_unique_pd_count,
+            pending_unique_pd_count,
             cache_hit_count,
             len(tasks),
             duplicate_count,
@@ -1162,7 +1300,10 @@ def write_sage_pd_khovanov_directory(
         "output_path": output_path,
         "implementation": implementation,
         "checked": int(len(results)),
+        "resumed": int(resume_count),
+        "pending": int(pending_file_count),
         "unique_pd": int(selected_unique_pd_count),
+        "pending_unique_pd": int(pending_unique_pd_count),
         "computed_unique": int(len(tasks)),
         "duplicates": int(duplicate_count),
         "cache_hits": int(cache_hit_count),
@@ -1180,6 +1321,8 @@ def write_sage_pd_khovanov_directory(
         "cache_flush_every": int(cache_flush_every),
         "schedule": schedule,
         "progress_every": int(progress_every),
+        "resume_output": bool(resume_output),
+        "resume_truncated_bytes": int(resume_info["truncated_bytes"]),
     }
 
 
