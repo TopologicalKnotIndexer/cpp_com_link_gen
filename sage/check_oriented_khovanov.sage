@@ -42,7 +42,7 @@ except Exception:
 PD_HEADER_RE = re.compile(r"^//\s*PD_CODE:\s*(.*)$")
 KH_HEADER_RE = re.compile(r"^//\s*KHOVANOV:\s*(.*)$")
 CPPKH_TERM_RE = re.compile(r"q\^(-?\d+)\*t\^(-?\d+)\*Z\[([^\]]*)\]")
-SAGE_POLYNOMIAL_CACHE_VERSION = 3
+SAGE_POLYNOMIAL_CACHE_VERSION = int(3)
 
 
 def _trim_cppkh_spaces(text):
@@ -812,7 +812,12 @@ def _load_sage_polynomial_cache(cache_path):
         print("warning: ignoring unreadable Sage polynomial cache {}: {}".format(cache_path, exc))
         return {}
 
-    if data.get("version") != SAGE_POLYNOMIAL_CACHE_VERSION:
+    cache_version = data.get("version")
+    try:
+        cache_version = int(cache_version)
+    except Exception:
+        cache_version = None
+    if cache_version != int(SAGE_POLYNOMIAL_CACHE_VERSION):
         print(
             "warning: ignoring Sage polynomial cache {} with version {}; expected {}".format(
                 cache_path, data.get("version"), SAGE_POLYNOMIAL_CACHE_VERSION
@@ -838,13 +843,13 @@ def _write_sage_polynomial_cache(cache_path, cache_entries):
     if cache_dir and not os.path.isdir(cache_dir):
         os.makedirs(cache_dir)
     temp_path = cache_path + ".tmp"
-    payload = {
-        "version": SAGE_POLYNOMIAL_CACHE_VERSION,
+    payload = _json_safe({
+        "version": int(SAGE_POLYNOMIAL_CACHE_VERSION),
         "sort": "t_then_q",
         "var1": "q",
         "var2": "t",
-        "entries": cache_entries,
-    }
+        "entries": {str(key): str(value) for key, value in cache_entries.items()},
+    })
     with open(temp_path, "w", encoding="utf-8", newline="\n") as fp:
         json.dump(payload, fp, ensure_ascii=False, sort_keys=True)
         fp.write("\n")
