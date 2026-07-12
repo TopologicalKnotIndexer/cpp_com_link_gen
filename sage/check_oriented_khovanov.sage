@@ -283,14 +283,70 @@ def sage_khovanov_for_pd(pd_code, implementation=None):
     return sage_homology_to_canonical(homology)
 
 
+def _exponent_tuple(value):
+    try:
+        return tuple(int(item) for item in value)
+    except TypeError:
+        return (int(value),)
+
+
+def _generator_index(gens, name, fallback):
+    names = [str(gen) for gen in gens]
+    for index, gen_name in enumerate(names):
+        if gen_name == name:
+            return index
+    if fallback < len(gens):
+        return fallback
+    raise ValueError(
+        "could not find polynomial generator {!r}; available generators are {}".format(
+            name, names
+        )
+    )
+
+
+def _degree_at(exponents, index):
+    if index < len(exponents):
+        return int(exponents[index])
+    return 0
+
+
+def _term_from_exponents(coeff, gens, exponents):
+    term = coeff
+    for index, gen in enumerate(gens):
+        degree = _degree_at(exponents, index)
+        if degree:
+            term *= gen ** degree
+    if len(exponents) > len(gens):
+        extra = exponents[len(gens):]
+        if any(int(value) != 0 for value in extra):
+            raise ValueError(
+                "polynomial exponent tuple has more nonzero entries than generators: {}".format(
+                    exponents
+                )
+            )
+    return term
+
+
 def kh_poly_string_t_q_ascending(P):
     """Render a Sage Khovanov polynomial sorted by ascending t, then q degree."""
-    q, t = P.parent().gens()
-    terms = sorted(P.dict().items(), key=lambda kv: (kv[0][1], kv[0][0]))
+    gens = P.parent().gens()
+    q_index = _generator_index(gens, "q", 0)
+    t_index = _generator_index(gens, "t", 1)
+    terms = [
+        (_exponent_tuple(exponents), coeff)
+        for exponents, coeff in P.dict().items()
+    ]
+    terms.sort(
+        key=lambda item: (
+            _degree_at(item[0], t_index),
+            _degree_at(item[0], q_index),
+            item[0],
+        )
+    )
 
     pieces = []
-    for (i, j), c in terms:
-        term = c * (q ** int(i)) * (t ** int(j))
+    for exponents, coeff in terms:
+        term = _term_from_exponents(coeff, gens, exponents)
         pieces.append(str(term))
 
     if not pieces:
