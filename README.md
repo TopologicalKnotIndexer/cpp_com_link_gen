@@ -215,7 +215,9 @@ The output file keeps the selected file order, even though computation is
 parallel. It is created immediately and flushed as ordered results become
 available. If a file fails to parse or Sage fails to compute its Khovanov
 polynomial, that file still gets a line and the polynomial field is replaced by a
-single-line `ERROR[...]` value.
+single-line `ERROR[...]` value. Progress is printed every `progress_every`
+completed output lines and includes cache hits, so the progress bar tracks the
+final output file rather than only newly computed unique PD codes.
 
 For speed, the exporter computes duplicate `PD_CODE` values only once by
 default and writes the result to every matching file line. It also keeps a

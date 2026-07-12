@@ -764,6 +764,14 @@ def _flush_output_file(fp, fsync=False):
             pass
 
 
+def _progress_bar(done, total, width=28):
+    total = max(1, int(total))
+    done = max(0, min(int(done), total))
+    width = max(10, int(width))
+    filled = int((done * width) // total)
+    return "[{}{}] {:6.2f}%".format("#" * filled, "." * (width - filled), 100.0 * done / total)
+
+
 def _output_label_for_path(data_dir, path, recursive=False):
     if recursive:
         return os.path.relpath(path, data_dir).replace(os.sep, "/")
@@ -859,6 +867,7 @@ def write_sage_pd_khovanov_directory(
     chunksize=1,
     start_method=None,
     progress_every=25,
+    progress_bar_width=28,
     deduplicate_pd=True,
     flush_every=1,
     fsync_every=0,
@@ -887,6 +896,8 @@ def write_sage_pd_khovanov_directory(
     Polynomial terms are sorted by ascending ``t`` exponent, then ascending
     ``q`` exponent.  The output order is the selected file order, not worker
     completion order.
+    Progress is printed every ``progress_every`` completed output file lines,
+    including cache hits and duplicate PD rows.
     The output file is opened immediately and flushed as soon as the next
     ordered result line is available, so it can be watched while Sage runs.
     By default this uses ``flush`` but not ``fsync``; set ``fsync_every`` to a
@@ -1004,7 +1015,11 @@ def write_sage_pd_khovanov_directory(
     flush_every = max(1, int(flush_every))
     fsync_every = max(0, int(fsync_every))
     cache_flush_every = max(1, int(cache_flush_every))
+    progress_every = 0 if not progress_every else max(1, int(progress_every))
+    progress_bar_width = max(10, int(progress_bar_width))
     last_flushed = 0
+    next_progress = progress_every if progress_every else None
+    last_progress_state = None
 
     def write_ready(fp, force=False):
         nonlocal written, last_flushed
@@ -1021,10 +1036,49 @@ def write_sage_pd_khovanov_directory(
                 _flush_output_file(fp, fsync=should_fsync)
                 last_flushed = written
 
+    def print_progress(force=False):
+        nonlocal next_progress, last_progress_state
+        if not progress_every:
+            return
+        should_print = bool(force)
+        if completed_files == len(file_records):
+            should_print = True
+        if next_progress is not None and completed_files >= next_progress:
+            should_print = True
+        if not should_print:
+            return
+
+        state = (completed_files, checked, written, error_count)
+        if state == last_progress_state:
+            return
+
+        elapsed = time.time() - started_at
+        speed = completed_files / elapsed if elapsed > 0 else 0.0
+        remaining = len(file_records) - completed_files
+        print(
+            "  {} computed_unique {}/{} cached={} completed_files={}/{} written={} remaining={} errors={} speed={:.2f} files/s".format(
+                _progress_bar(completed_files, len(file_records), progress_bar_width),
+                checked,
+                len(tasks),
+                cache_hit_count,
+                completed_files,
+                len(file_records),
+                written,
+                remaining,
+                error_count,
+                speed,
+            )
+        )
+        last_progress_state = state
+        if next_progress is not None:
+            while next_progress <= completed_files:
+                next_progress += progress_every
+
     try:
         with open(output_path, "w", encoding="utf-8", newline="\n") as fp:
             _flush_output_file(fp, fsync=False)
             write_ready(fp)
+            print_progress(force=completed_files > 0)
             if tasks:
                 pool = ctx.Pool(processes=worker_count)
                 iterator = pool.imap_unordered(
@@ -1063,28 +1117,12 @@ def write_sage_pd_khovanov_directory(
                         }
                     completed_files += len(indices)
                     write_ready(fp)
-
-                    if progress_every and (
-                        checked == 1 or completed_files % int(progress_every) == 0 or checked == len(tasks)
-                    ):
-                        elapsed = time.time() - started_at
-                        speed = completed_files / elapsed if elapsed > 0 else 0.0
-                        print(
-                            "  computed_unique {}/{} cached={} completed_files={}/{} written={} errors={} speed={:.2f} files/s".format(
-                                checked,
-                                len(tasks),
-                                cache_hit_count,
-                                completed_files,
-                                len(file_records),
-                                written,
-                                error_count,
-                                speed,
-                            )
-                        )
+                    print_progress(force=(checked == 1 or checked == len(tasks)))
                 else:
                     pool.close()
                     pool_closed = True
             write_ready(fp, force=True)
+            print_progress(force=True)
             if cache_path and cache_dirty_count:
                 _write_sage_polynomial_cache(cache_path, polynomial_cache)
                 cache_dirty_count = 0
@@ -1141,6 +1179,7 @@ def write_sage_pd_khovanov_directory(
         "fsync_every": int(fsync_every),
         "cache_flush_every": int(cache_flush_every),
         "schedule": schedule,
+        "progress_every": int(progress_every),
     }
 
 
