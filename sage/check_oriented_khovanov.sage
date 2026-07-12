@@ -15,10 +15,11 @@ Then run, for example:
     ....: )
 
 The main export helper extracts PD_CODE from each selected txt file, lets Sage
-compute one integral Khovanov homology directly from that PD code, and writes
-ordered lines of the form ``filename: homology``.  The output file is created
-immediately and flushed as ordered results become available.  Per-file errors
-are written as single-line ``ERROR[...]`` values in the homology field.
+compute one Khovanov polynomial directly from that PD code with variables
+``q`` and ``t``, and writes ordered lines of the form ``filename: polynomial``.
+The output file is created immediately and flushed as ordered results become
+available.  Per-file errors are written as single-line ``ERROR[...]`` values in
+the polynomial field.
 """
 
 import ast
@@ -280,6 +281,28 @@ def sage_khovanov_for_pd(pd_code, implementation=None):
     link = Link(pd_code)
     homology = _sage_khovanov_homology(link, implementation=implementation)
     return sage_homology_to_canonical(homology)
+
+
+def kh_poly_string_q_t_ascending(P):
+    """Render a Sage Khovanov polynomial sorted by ascending q, then t degree."""
+    q, t = P.parent().gens()
+    terms = sorted(P.dict().items(), key=lambda kv: (kv[0][0], kv[0][1]))
+
+    pieces = []
+    for (i, j), c in terms:
+        term = c * (q ** int(i)) * (t ** int(j))
+        pieces.append(str(term))
+
+    if not pieces:
+        return "0"
+    return " + ".join(pieces).replace("+ -", "- ")
+
+
+def sage_khovanov_polynomial_for_pd(pd_code):
+    """Compute Sage's q,t Khovanov polynomial directly from a PD code."""
+    link = Link(pd_code)
+    polynomial = link.khovanov_polynomial(var1="q", var2="t")
+    return kh_poly_string_q_t_ascending(polynomial)
 
 
 def sage_homology_to_canonical(homology):
@@ -642,15 +665,16 @@ def check_sage_membership_directory(
 
 def _sage_pd_khovanov_export_worker(task):
     index, path, label, implementation = task
+    del implementation
     try:
         pd_code = parse_pd_code_from_file(path)
-        homology = sage_khovanov_for_pd(pd_code, implementation=implementation)
+        polynomial = sage_khovanov_polynomial_for_pd(pd_code)
         return {
             "ok": True,
             "index": int(index),
             "path": path,
             "label": label,
-            "homology": canonical_homology_to_cppkh_text(homology),
+            "homology": polynomial,
             "error": None,
         }
     except Exception as exc:
@@ -704,20 +728,22 @@ def write_sage_pd_khovanov_directory(
     progress_every=25,
 ):
     """
-    Compute one Sage Khovanov homology per txt file and write ordered lines.
+    Compute one Sage Khovanov polynomial per txt file and write ordered lines.
 
     This function does not inspect existing ``KHOVANOV`` headers and does not
     compare results.  It extracts only ``PD_CODE`` from each selected ``.txt``
-    file, computes ``Link(pd_code).khovanov_homology(ring=ZZ)`` in parallel,
-    and writes one line per file:
+    file, computes ``Link(pd_code).khovanov_polynomial(var1="q", var2="t")``
+    in parallel, and writes one line per file:
 
-        filename: q^...*t^...*Z[...]
+        filename: q^...*t^...
 
-    The output order is the selected file order, not worker completion order.
+    Polynomial terms are sorted by ascending ``q`` exponent, then ascending
+    ``t`` exponent.  The output order is the selected file order, not worker
+    completion order.
     The output file is opened immediately and flushed as soon as the next
     ordered result line is available, so it can be watched while Sage runs.
     If parsing or Sage computation fails for a file, the corresponding output
-    line is still written, with the homology field replaced by a single-line
+    line is still written, with the polynomial field replaced by a single-line
     ``ERROR[...]`` value.
     """
     data_dir = os.path.abspath(str(data_dir))
@@ -1244,4 +1270,4 @@ def check_khovanov_directory_parallel(
 
 
 print("Loaded Sage Khovanov orientation checker.")
-print("Export Sage PD Khovanov values: write_sage_pd_khovanov_directory(..., output_path, workers=8)")
+print("Export Sage PD Khovanov polynomials: write_sage_pd_khovanov_directory(..., output_path, workers=8)")

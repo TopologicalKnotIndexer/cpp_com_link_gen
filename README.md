@@ -184,15 +184,17 @@ When Spherogram is available, the validation suite constructs independent
 Spherogram `Link` objects from generated PD codes and verifies component counts
 and PD round trips.
 
-## SageMath Khovanov Cross-Check
+## SageMath Khovanov Polynomial Export
 
-The Sage helper can export one Sage-computed Khovanov homology value for every
+The Sage helper can export one Sage-computed Khovanov polynomial for every
 selected generated `.txt` file. It extracts only `PD_CODE`, lets Sage construct
-the link directly from that PD code, computes `Link(pd).khovanov_homology()`,
-and writes ordered lines of the form `filename: homology`. The output path is
-converted to an absolute path and printed at startup. Relative paths are
-resolved from Sage's current working directory, so use an absolute output path
-if you want the file in this repository's `build` directory.
+the link directly from that PD code, computes
+`Link(pd).khovanov_polynomial(var1="q", var2="t")`, and writes ordered lines of
+the form `filename: polynomial`. Polynomial terms are sorted by ascending
+`q` exponent, then ascending `t` exponent. The output path is converted to an
+absolute path and printed at startup. Relative paths are resolved from Sage's
+current working directory, so use an absolute output path if you want the file
+in this repository's `build` directory.
 
 ```sage
 load("sage/check_oriented_khovanov.sage")
@@ -209,7 +211,7 @@ write_sage_pd_khovanov_directory(
 The output file keeps the selected file order, even though computation is
 parallel. It is created immediately and flushed as ordered results become
 available. If a file fails to parse or Sage fails to compute its Khovanov
-homology, that file still gets a line and the homology field is replaced by a
+polynomial, that file still gets a line and the polynomial field is replaced by a
 single-line `ERROR[...]` value.
 
 ```sage
