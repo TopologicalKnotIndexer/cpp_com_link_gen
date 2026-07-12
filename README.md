@@ -206,7 +206,7 @@ write_sage_pd_khovanov_directory(
     "build/sage_pd_khovanov.txt",
     numeric_only=True,
     workers=8,
-    chunksize=4,
+    chunksize=1,
     progress_every=25,
 )
 ```
@@ -218,11 +218,14 @@ polynomial, that file still gets a line and the polynomial field is replaced by 
 single-line `ERROR[...]` value.
 
 For speed, the exporter computes duplicate `PD_CODE` values only once by
-default and writes the result to every matching file line. It uses Python
-`flush()` for live file visibility but does not call `fsync()` by default; pass
-`fsync_every=100` or another positive line count only if you need periodic disk
-syncs. Increase `chunksize` to reduce multiprocessing overhead when individual
-files have similar cost.
+default and writes the result to every matching file line. It also keeps a
+persistent success cache at `output_path + ".cache.json"` by default, so reruns
+skip previously computed `PD_CODE` values; pass `cache_path=None` to disable
+that cache. It schedules uncached jobs by descending crossing count to reduce
+parallel tail latency. It uses Python `flush()` for live file visibility but
+does not call `fsync()` by default; pass `fsync_every=100` or another positive
+line count only if you need periodic disk syncs. Keep `chunksize=1` unless a
+benchmark shows your selected range has very uniform cost.
 
 ```sage
 write_sage_pd_khovanov_directory(
@@ -232,7 +235,7 @@ write_sage_pd_khovanov_directory(
     end_index=1000,
     numeric_only=True,
     workers=8,
-    chunksize=4,
+    chunksize=1,
     progress_every=25,
 )
 ```

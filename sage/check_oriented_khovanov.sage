@@ -42,6 +42,7 @@ except Exception:
 PD_HEADER_RE = re.compile(r"^//\s*PD_CODE:\s*(.*)$")
 KH_HEADER_RE = re.compile(r"^//\s*KHOVANOV:\s*(.*)$")
 CPPKH_TERM_RE = re.compile(r"q\^(-?\d+)\*t\^(-?\d+)\*Z\[([^\]]*)\]")
+SAGE_POLYNOMIAL_CACHE_VERSION = 3
 
 
 def _trim_cppkh_spaces(text):
@@ -769,6 +770,82 @@ def _output_label_for_path(data_dir, path, recursive=False):
     return os.path.basename(path)
 
 
+def _pd_cache_key(pd_code):
+    return json.dumps(pd_code, separators=(",", ":"), sort_keys=False)
+
+
+def _default_cache_path(output_path):
+    return output_path + ".cache.json"
+
+
+def _resolve_cache_path(cache_path, output_path):
+    if cache_path is None or cache_path is False:
+        return None
+    if cache_path == "auto" or cache_path is True:
+        return _default_cache_path(output_path)
+    return os.path.abspath(str(cache_path))
+
+
+def _load_sage_polynomial_cache(cache_path):
+    if not cache_path or not os.path.isfile(cache_path):
+        return {}
+    try:
+        with open(cache_path, "r", encoding="utf-8") as fp:
+            data = json.load(fp)
+    except Exception as exc:
+        print("warning: ignoring unreadable Sage polynomial cache {}: {}".format(cache_path, exc))
+        return {}
+
+    if data.get("version") != SAGE_POLYNOMIAL_CACHE_VERSION:
+        print(
+            "warning: ignoring Sage polynomial cache {} with version {}; expected {}".format(
+                cache_path, data.get("version"), SAGE_POLYNOMIAL_CACHE_VERSION
+            )
+        )
+        return {}
+
+    entries = data.get("entries", {})
+    if not isinstance(entries, dict):
+        print("warning: ignoring malformed Sage polynomial cache {}".format(cache_path))
+        return {}
+    return {
+        str(key): str(value)
+        for key, value in entries.items()
+        if isinstance(value, str) and not value.startswith("ERROR[")
+    }
+
+
+def _write_sage_polynomial_cache(cache_path, cache_entries):
+    if not cache_path:
+        return
+    cache_dir = os.path.dirname(cache_path)
+    if cache_dir and not os.path.isdir(cache_dir):
+        os.makedirs(cache_dir)
+    temp_path = cache_path + ".tmp"
+    payload = {
+        "version": SAGE_POLYNOMIAL_CACHE_VERSION,
+        "sort": "t_then_q",
+        "var1": "q",
+        "var2": "t",
+        "entries": cache_entries,
+    }
+    with open(temp_path, "w", encoding="utf-8", newline="\n") as fp:
+        json.dump(payload, fp, ensure_ascii=False, sort_keys=True)
+        fp.write("\n")
+    os.replace(temp_path, cache_path)
+
+
+def _scheduled_pd_tasks(pd_jobs, schedule):
+    items = list(pd_jobs.items())
+    if schedule in (None, "input", "input_order"):
+        items.sort(key=lambda kv: kv[1]["indices"][0])
+    elif schedule in ("crossings_desc", "largest_first"):
+        items.sort(key=lambda kv: (-int(kv[1]["crossing_count"]), kv[1]["indices"][0]))
+    else:
+        raise ValueError("unknown Sage export schedule: {}".format(schedule))
+    return [(key, item["pd_code"]) for key, item in items]
+
+
 def write_sage_pd_khovanov_directory(
     data_dir,
     output_path,
@@ -785,6 +862,9 @@ def write_sage_pd_khovanov_directory(
     deduplicate_pd=True,
     flush_every=1,
     fsync_every=0,
+    cache_path="auto",
+    cache_flush_every=25,
+    schedule="crossings_desc",
 ):
     """
     Compute one Sage Khovanov polynomial per txt file and write ordered lines.
@@ -799,6 +879,11 @@ def write_sage_pd_khovanov_directory(
     Duplicate ``PD_CODE`` values are computed only once by default; every file
     still gets its own output line.  Set ``deduplicate_pd=False`` to force one
     Sage computation per file.
+    Successful polynomial computations are cached by ``PD_CODE`` in
+    ``output_path + ".cache.json"`` by default, so reruns skip already-computed
+    links.  Set ``cache_path=None`` to disable persistent caching.
+    Uncached jobs are scheduled by descending crossing count by default to
+    reduce parallel tail latency; set ``schedule="input"`` for input order.
     Polynomial terms are sorted by ascending ``t`` exponent, then ascending
     ``q`` exponent.  The output order is the selected file order, not worker
     completion order.
@@ -812,6 +897,7 @@ def write_sage_pd_khovanov_directory(
     """
     data_dir = os.path.abspath(str(data_dir))
     output_path = os.path.abspath(str(output_path))
+    cache_path = _resolve_cache_path(cache_path, output_path)
     paths = _selected_txt_files(
         data_dir,
         limit=limit,
@@ -825,6 +911,8 @@ def write_sage_pd_khovanov_directory(
 
     worker_count = _default_worker_count(workers)
     ctx = _multiprocessing_context(start_method)
+    polynomial_cache = _load_sage_polynomial_cache(cache_path)
+    cache_start_count = len(polynomial_cache)
     file_records = [
         {
             "index": index,
@@ -836,16 +924,37 @@ def write_sage_pd_khovanov_directory(
 
     results = [None] * len(file_records)
     pd_jobs = {}
+    selected_pd_keys = set()
     parse_error_count = 0
+    cache_hit_count = 0
     for record in file_records:
         index = int(record["index"])
         path = record["path"]
         label = record["label"]
         try:
             pd_code = parse_pd_code_from_file(path)
-            key = repr(pd_code) if deduplicate_pd else "{}:{}".format(index, repr(pd_code))
+            pd_cache_key = _pd_cache_key(pd_code)
+            selected_pd_keys.add(pd_cache_key)
+            if pd_cache_key in polynomial_cache:
+                cache_hit_count += 1
+                results[index] = {
+                    "ok": True,
+                    "index": index,
+                    "path": path,
+                    "label": label,
+                    "homology": polynomial_cache[pd_cache_key],
+                    "error": None,
+                }
+                continue
+
+            key = pd_cache_key if deduplicate_pd else "{}:{}".format(index, pd_cache_key)
             if key not in pd_jobs:
-                pd_jobs[key] = {"pd_code": pd_code, "indices": []}
+                pd_jobs[key] = {
+                    "pd_code": pd_code,
+                    "indices": [],
+                    "cache_key": pd_cache_key,
+                    "crossing_count": len(pd_code),
+                }
             pd_jobs[key]["indices"].append(index)
         except Exception as exc:
             parse_error_count += 1
@@ -861,23 +970,31 @@ def write_sage_pd_khovanov_directory(
                 "traceback": traceback.format_exc(),
             }
 
-    tasks = [
-        (key, item["pd_code"])
-        for key, item in sorted(pd_jobs.items(), key=lambda kv: kv[1]["indices"][0])
-    ]
-    duplicate_count = len(file_records) - parse_error_count - len(tasks)
+    tasks = _scheduled_pd_tasks(pd_jobs, schedule)
+    selected_unique_pd_count = len(selected_pd_keys)
+    duplicate_count = len(file_records) - parse_error_count - selected_unique_pd_count
 
     print(
-        "Sage PD Khovanov export starting: files={} unique_pd={} duplicates={} workers={} start_method={} output={}".format(
-            len(file_records), len(tasks), duplicate_count, worker_count, ctx.get_start_method(), output_path
+        "Sage PD Khovanov export starting: files={} unique_pd={} cached={} to_compute={} duplicates={} workers={} start_method={} output={}".format(
+            len(file_records),
+            selected_unique_pd_count,
+            cache_hit_count,
+            len(tasks),
+            duplicate_count,
+            worker_count,
+            ctx.get_start_method(),
+            output_path,
         )
     )
+    if cache_path:
+        print("  cache={} entries={}".format(cache_path, cache_start_count))
 
     started_at = time.time()
     checked = 0
     written = 0
-    completed_files = parse_error_count
+    completed_files = parse_error_count + cache_hit_count
     error_count = parse_error_count
+    cache_dirty_count = 0
     pool = None
     pool_closed = False
     output_dir = os.path.dirname(output_path)
@@ -886,6 +1003,7 @@ def write_sage_pd_khovanov_directory(
 
     flush_every = max(1, int(flush_every))
     fsync_every = max(0, int(fsync_every))
+    cache_flush_every = max(1, int(cache_flush_every))
     last_flushed = 0
 
     def write_ready(fp, force=False):
@@ -920,6 +1038,15 @@ def write_sage_pd_khovanov_directory(
                     indices = job["indices"]
                     if item.get("error") is not None:
                         error_count += len(indices)
+                    else:
+                        cache_key = job.get("cache_key")
+                        if cache_path and cache_key:
+                            if polynomial_cache.get(cache_key) != item["homology"]:
+                                polynomial_cache[cache_key] = item["homology"]
+                                cache_dirty_count += 1
+                                if cache_dirty_count >= cache_flush_every:
+                                    _write_sage_polynomial_cache(cache_path, polynomial_cache)
+                                    cache_dirty_count = 0
 
                     for index in indices:
                         record = file_records[index]
@@ -943,9 +1070,10 @@ def write_sage_pd_khovanov_directory(
                         elapsed = time.time() - started_at
                         speed = completed_files / elapsed if elapsed > 0 else 0.0
                         print(
-                            "  computed_unique {}/{} completed_files={}/{} written={} errors={} speed={:.2f} files/s".format(
+                            "  computed_unique {}/{} cached={} completed_files={}/{} written={} errors={} speed={:.2f} files/s".format(
                                 checked,
                                 len(tasks),
+                                cache_hit_count,
                                 completed_files,
                                 len(file_records),
                                 written,
@@ -957,6 +1085,9 @@ def write_sage_pd_khovanov_directory(
                     pool.close()
                     pool_closed = True
             write_ready(fp, force=True)
+            if cache_path and cache_dirty_count:
+                _write_sage_polynomial_cache(cache_path, polynomial_cache)
+                cache_dirty_count = 0
     except Exception:
         if pool is not None and not pool_closed:
             pool.terminate()
@@ -977,8 +1108,15 @@ def write_sage_pd_khovanov_directory(
 
     elapsed = time.time() - started_at
     print(
-        "Sage PD Khovanov export written: files={} unique_pd={} duplicates={} errors={} output={} elapsed={:.1f}s".format(
-            len(results), len(tasks), duplicate_count, error_count, output_path, elapsed
+        "Sage PD Khovanov export written: files={} unique_pd={} cached={} computed_unique={} duplicates={} errors={} output={} elapsed={:.1f}s".format(
+            len(results),
+            selected_unique_pd_count,
+            cache_hit_count,
+            len(tasks),
+            duplicate_count,
+            error_count,
+            output_path,
+            elapsed,
         )
     )
     return {
@@ -986,8 +1124,12 @@ def write_sage_pd_khovanov_directory(
         "output_path": output_path,
         "implementation": implementation,
         "checked": int(len(results)),
-        "unique_pd": int(len(tasks)),
+        "unique_pd": int(selected_unique_pd_count),
+        "computed_unique": int(len(tasks)),
         "duplicates": int(duplicate_count),
+        "cache_hits": int(cache_hit_count),
+        "cache_path": cache_path,
+        "cache_entries": int(len(polynomial_cache)),
         "parse_errors": int(parse_error_count),
         "errors": int(error_count),
         "elapsed_seconds": float(elapsed),
@@ -997,6 +1139,8 @@ def write_sage_pd_khovanov_directory(
         "deduplicate_pd": bool(deduplicate_pd),
         "flush_every": int(flush_every),
         "fsync_every": int(fsync_every),
+        "cache_flush_every": int(cache_flush_every),
+        "schedule": schedule,
     }
 
 
