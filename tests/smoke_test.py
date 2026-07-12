@@ -89,6 +89,27 @@ def main() -> int:
         assert "// KHOVANOV:" in content
         assert "// PD_CODE:" in content
 
+        manual_dir = tmp_path / "manual_kh"
+        manual_dir.mkdir()
+        manual_pd = "[[2, 3, 1, 4], [4, 1, 3, 2]]"
+        for index, z_text in enumerate(("Z[2,0]", "Z[0,2]"), start=1):
+            (manual_dir / f"{index:07d}.txt").write_text(
+                f"// KHOVANOV: q^0*t^0*{z_text}\n"
+                f"// PD_CODE: {manual_pd}\n"
+                "[L2a1]\n",
+                encoding="utf-8",
+            )
+        classify_out = run([
+            "classify",
+            "--dir",
+            str(manual_dir),
+            "--cluster-dir",
+            str(tmp_path / "manual_cluster"),
+            "--dry-run",
+        ])
+        assert "ignore_pd_code: 1" in classify_out
+        assert "khovanov_classes: 1" in classify_out
+
     print("smoke test passed")
     return 0
 

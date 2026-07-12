@@ -144,6 +144,8 @@ point.
 - Every C++ path that calls `cppkh` first normalizes the `PD_CODE`, verifies
   contiguous component numbering, checks that every strand pair is adjacent in
   the component cycle, and then passes explicit crossing signs into `cppkh`.
+- Khovanov strings are normalized so every `Z[...]` invariant-factor list is
+  sorted in ascending numeric order before output or clustering.
 - Downstream clustering is implemented in C++ and does not call the old Python
   scripts. The diagram stage writes SVG files instead of the old Pillow PNG
   files so the pipeline stays self-contained and cross-platform.

@@ -88,7 +88,7 @@ def parse_cppkh_homology(text):
         t_degree = int(match.group(2))
         inv_text = match.group(3).strip()
         invariants = tuple(
-            int(item) for item in inv_text.split(",") if item.strip() != ""
+            sorted(int(item) for item in inv_text.split(",") if item.strip() != "")
         )
         terms.append((q_degree, t_degree, invariants))
 
@@ -101,7 +101,7 @@ def canonical_homology_to_cppkh_text(canonical):
     """Render a canonical homology tuple in cppkh-like notation."""
     chunks = []
     for q_degree, t_degree, invariants in canonical:
-        inv = ",".join(str(x) for x in invariants)
+        inv = ",".join(str(x) for x in sorted(invariants))
         chunks.append("q^{}*t^{}*Z[{}]".format(q_degree, t_degree, inv))
     return " + ".join(chunks)
 
@@ -265,9 +265,9 @@ def sage_module_to_invariants(module):
         except Exception:
             continue
         if values:
-            return tuple(0 if x == 0 else abs(x) for x in values)
+            return tuple(sorted(0 if x == 0 else abs(x) for x in values))
 
-    return _parse_module_repr(str(module))
+    return tuple(sorted(_parse_module_repr(str(module))))
 
 
 def _sage_khovanov_homology(link, implementation=None):
@@ -312,7 +312,7 @@ def sage_homology_to_canonical(homology):
         for t_degree, module in by_t_degree.items():
             invariants = sage_module_to_invariants(module)
             if invariants:
-                terms.append((int(q_degree), int(t_degree), tuple(invariants)))
+                terms.append((int(q_degree), int(t_degree), tuple(sorted(invariants))))
     return tuple(sorted(terms))
 
 

@@ -24,6 +24,7 @@ NAME_RE = re.compile(r"^(m?)([LK])(\d+)([an])(\d+)$")
 PD_HEADER_RE = re.compile(r"^//\s*PD_CODE:\s*(.*)$")
 KH_HEADER_RE = re.compile(r"^//\s*KHOVANOV:\s*(.*)$")
 METHOD_RE = re.compile(r"^L\[(\d+)\s*,\s*(\d+)\]\s*#\s*L\[(\d+)\s*,\s*(\d+)\]\s*$")
+Z_FACTORS_RE = re.compile(r"Z\[([^\]]*)\]")
 
 KNOWN_KH_SINGLE = {
     "unknot": (
@@ -62,6 +63,16 @@ def run(args: list[str], *, timeout: int = 120, cwd: Path = ROOT) -> str:
         check=True,
     )
     return result.stdout
+
+
+def assert_z_factors_sorted(text: str) -> None:
+    for match in Z_FACTORS_RE.finditer(text):
+        body = match.group(1).strip()
+        if not body:
+            continue
+        values = [int(item.strip()) for item in body.split(",") if item.strip()]
+        if values != sorted(values):
+            raise AssertionError(f"Z invariant factors are not sorted: Z[{body}]")
 
 
 def ensure_built() -> None:
@@ -370,6 +381,8 @@ def assert_generated_file_invariants(path: Path) -> tuple[int, int, int]:
 def assert_known_khovanov_values() -> None:
     for name, (pd_text, expected) in KNOWN_KH_SINGLE.items():
         actual = run(["kh", "--pd", pd_text], timeout=120).splitlines()
+        for line in actual:
+            assert_z_factors_sorted(line)
         if actual != [expected]:
             raise AssertionError(
                 f"{name}: unexpected single-PD Khovanov output\n"
@@ -377,6 +390,8 @@ def assert_known_khovanov_values() -> None:
             )
     for name, (pd_text, expected) in KNOWN_KH_ALL_ORIENTATIONS.items():
         actual = set(run(["kh-all-orientations", "--pd", pd_text], timeout=120).splitlines())
+        for line in actual:
+            assert_z_factors_sorted(line)
         if actual != expected:
             raise AssertionError(
                 f"{name}: unexpected all-orientations output\n"
@@ -440,8 +455,10 @@ def run_generated_dataset_validation(
         max_components = 0
         samples: list[tuple[list[list[int]], int]] = []
         for path in files:
-            pd, _, _ = parse_generated_file(path)
+            pd, kh_lines, _ = parse_generated_file(path)
             _, components, kh_count = assert_generated_file_invariants(path)
+            for kh_line in kh_lines:
+                assert_z_factors_sorted(kh_line)
             samples.append((pd, components))
             kh_files += int(kh_count > 0)
             max_kh = max(max_kh, kh_count)

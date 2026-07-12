@@ -579,6 +579,59 @@ std::vector<std::string> splitLines(const std::string& text) {
     return lines;
 }
 
+int parseInvariantFactor(const std::string& text) {
+    std::string token = trim(text);
+    if (token.empty()) throw std::runtime_error("empty invariant factor in Z[...]");
+    size_t consumed = 0;
+    int value = std::stoi(token, &consumed);
+    if (consumed != token.size()) {
+        throw std::runtime_error("bad invariant factor in Z[...]: " + token);
+    }
+    return value;
+}
+
+std::string sortedInvariantFactorsText(const std::string& text) {
+    std::string body = trim(text);
+    if (body.empty()) return "";
+
+    std::vector<int> values;
+    std::stringstream ss(body);
+    std::string item;
+    while (std::getline(ss, item, ',')) {
+        values.push_back(parseInvariantFactor(item));
+    }
+    std::sort(values.begin(), values.end());
+
+    std::ostringstream out;
+    for (size_t i = 0; i < values.size(); ++i) {
+        if (i) out << ",";
+        out << values[i];
+    }
+    return out.str();
+}
+
+std::string normalizeKhovanovZInvariants(const std::string& text) {
+    std::string out;
+    size_t pos = 0;
+    while (true) {
+        size_t start = text.find("Z[", pos);
+        if (start == std::string::npos) {
+            out.append(text.substr(pos));
+            break;
+        }
+        size_t end = text.find(']', start + 2);
+        if (end == std::string::npos) {
+            throw std::runtime_error("unterminated Z[...] in Khovanov text");
+        }
+        out.append(text.substr(pos, start - pos));
+        out.append("Z[");
+        out.append(sortedInvariantFactorsText(text.substr(start + 2, end - start - 2)));
+        out.push_back(']');
+        pos = end + 1;
+    }
+    return out;
+}
+
 int baseCrossingSign(const Crossing& crossing) {
     int b = crossing[1];
     int d = crossing[3];
@@ -687,7 +740,7 @@ std::string computeKhovanovSinglePD(const PDCode& pd) {
     std::vector<std::string> lines;
     for (std::string line : splitLines(rawOutput)) {
         line = trim(line);
-        if (!line.empty()) lines.push_back(line);
+        if (!line.empty()) lines.push_back(normalizeKhovanovZInvariants(line));
     }
     if (lines.size() != 1) {
         std::ostringstream err;
@@ -717,7 +770,7 @@ std::vector<std::string> computeKhovanovAllOrientations(const PDCode& pd) {
     std::set<std::string> unique;
     for (std::string line : splitLines(rawOutput)) {
         line = trim(line);
-        if (!line.empty()) unique.insert(line);
+        if (!line.empty()) unique.insert(normalizeKhovanovZInvariants(line));
     }
 
     if (unique.size() > maxDistinct) {
@@ -1213,7 +1266,7 @@ std::string khovanovKeyFromContent(const std::string& content, const fs::path& s
         if (line.find("KHOVANOV") == std::string::npos) continue;
         size_t colon = line.find(':');
         if (colon == std::string::npos) throw std::runtime_error("bad KHOVANOV line in " + source.string());
-        lines.push_back(trim(line.substr(colon + 1)));
+        lines.push_back(normalizeKhovanovZInvariants(trim(line.substr(colon + 1))));
     }
     if (lines.empty()) throw std::runtime_error("KHOVANOV header not found in " + source.string());
     std::sort(lines.begin(), lines.end());
