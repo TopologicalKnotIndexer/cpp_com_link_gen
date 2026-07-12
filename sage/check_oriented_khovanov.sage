@@ -100,7 +100,7 @@ def parse_cppkh_homology(text):
 def canonical_homology_to_cppkh_text(canonical):
     """Render a canonical homology tuple in cppkh-like notation."""
     chunks = []
-    for q_degree, t_degree, invariants in canonical:
+    for q_degree, t_degree, invariants in sorted(canonical, key=lambda item: (item[1], item[0])):
         inv = ",".join(str(x) for x in sorted(invariants))
         chunks.append("q^{}*t^{}*Z[{}]".format(q_degree, t_degree, inv))
     return " + ".join(chunks)
@@ -283,10 +283,10 @@ def sage_khovanov_for_pd(pd_code, implementation=None):
     return sage_homology_to_canonical(homology)
 
 
-def kh_poly_string_q_t_ascending(P):
-    """Render a Sage Khovanov polynomial sorted by ascending q, then t degree."""
+def kh_poly_string_t_q_ascending(P):
+    """Render a Sage Khovanov polynomial sorted by ascending t, then q degree."""
     q, t = P.parent().gens()
-    terms = sorted(P.dict().items(), key=lambda kv: (kv[0][0], kv[0][1]))
+    terms = sorted(P.dict().items(), key=lambda kv: (kv[0][1], kv[0][0]))
 
     pieces = []
     for (i, j), c in terms:
@@ -298,11 +298,16 @@ def kh_poly_string_q_t_ascending(P):
     return " + ".join(pieces).replace("+ -", "- ")
 
 
+def kh_poly_string_q_t_ascending(P):
+    """Backward-compatible alias; output is sorted by ascending t, then q."""
+    return kh_poly_string_t_q_ascending(P)
+
+
 def sage_khovanov_polynomial_for_pd(pd_code):
     """Compute Sage's q,t Khovanov polynomial directly from a PD code."""
     link = Link(pd_code)
     polynomial = link.khovanov_polynomial(var1="q", var2="t")
-    return kh_poly_string_q_t_ascending(polynomial)
+    return kh_poly_string_t_q_ascending(polynomial)
 
 
 def sage_homology_to_canonical(homology):
@@ -737,8 +742,8 @@ def write_sage_pd_khovanov_directory(
 
         filename: q^...*t^...
 
-    Polynomial terms are sorted by ascending ``q`` exponent, then ascending
-    ``t`` exponent.  The output order is the selected file order, not worker
+    Polynomial terms are sorted by ascending ``t`` exponent, then ascending
+    ``q`` exponent.  The output order is the selected file order, not worker
     completion order.
     The output file is opened immediately and flushed as soon as the next
     ordered result line is available, so it can be watched while Sage runs.

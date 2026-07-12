@@ -193,7 +193,7 @@ selected generated `.txt` file. It extracts only `PD_CODE`, lets Sage construct
 the link directly from that PD code, computes
 `Link(pd).khovanov_polynomial(var1="q", var2="t")`, and writes ordered lines of
 the form `filename: polynomial`. Polynomial terms are sorted by ascending
-`q` exponent, then ascending `t` exponent. The output path is converted to an
+`t` exponent, then ascending `q` exponent. The output path is converted to an
 absolute path and printed at startup. Relative paths are resolved from Sage's
 current working directory, so use an absolute output path if you want the file
 in this repository's `build` directory.
