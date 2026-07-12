@@ -186,17 +186,18 @@ When Spherogram is available, the validation suite constructs independent
 Spherogram `Link` objects from generated PD codes and verifies component counts
 and PD round trips.
 
-## SageMath Khovanov Polynomial Export
+## SageMath Khovanov Homology Export
 
-The Sage helper can export one Sage-computed Khovanov polynomial for every
+The Sage helper can export one Sage-computed Khovanov homology value for every
 selected generated `.txt` file. It extracts only `PD_CODE`, lets Sage construct
 the link directly from that PD code, computes
-`Link(pd).khovanov_polynomial(var1="q", var2="t")`, and writes ordered lines of
-the form `filename: polynomial`. Polynomial terms are sorted by ascending
-`t` exponent, then ascending `q` exponent. The output path is converted to an
-absolute path and printed at startup. Relative paths are resolved from Sage's
-current working directory, so use an absolute output path if you want the file
-in this repository's `build` directory.
+`Link(pd).khovanov_homology(ring=ZZ)`, and writes ordered lines in the same
+format as the C++/`cppkh` path: `filename: q^...*t^...*Z[...]`. Homology terms
+are sorted by ascending `t` degree, then ascending `q` degree, and invariant
+factors inside each `Z[...]` are sorted ascending. The output path is converted
+to an absolute path and printed at startup. Relative paths are resolved from
+Sage's current working directory, so use an absolute output path if you want the
+file in this repository's `build` directory.
 
 ```sage
 load("sage/check_oriented_khovanov.sage")
@@ -214,13 +215,14 @@ write_sage_pd_khovanov_directory(
 The output file keeps the selected file order, even though computation is
 parallel. It is created immediately and flushed as ordered results become
 available. If a file fails to parse or Sage fails to compute its Khovanov
-polynomial, that file still gets a line and the polynomial field is replaced by a
+homology, that file still gets a line and the homology field is replaced by a
 single-line `ERROR[...]` value. Progress is printed every `progress_every`
 completed selected files and includes resumed rows and cache hits.
 
 The exporter resumes interrupted runs by default. On startup it reads the
 existing output file, accepts only the longest ordered prefix whose lines match
-the selected filenames, truncates any partial or mismatched trailing bytes, and
+the selected filenames and whose values are already in cppkh homology format,
+truncates any partial, mismatched, or old polynomial-format trailing bytes, and
 then appends from the next missing line. This is intended for `Ctrl+C` recovery:
 rerunning the same command with the same selected file range continues from the
 last complete synced output line. Pass `resume_output=False` to overwrite the

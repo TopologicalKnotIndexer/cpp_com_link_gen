@@ -15,11 +15,11 @@ Then run, for example:
     ....: )
 
 The main export helper extracts PD_CODE from each selected txt file, lets Sage
-compute one Khovanov polynomial directly from that PD code with variables
-``q`` and ``t``, and writes ordered lines of the form ``filename: polynomial``.
+compute one Khovanov homology directly from that PD code over ``ZZ``, and
+writes ordered lines of the form ``filename: q^...*t^...*Z[...]``.
 The output file is created immediately and flushed as ordered results become
 available.  Per-file errors are written as single-line ``ERROR[...]`` values in
-the polynomial field.
+the homology field.
 """
 
 import ast
@@ -42,11 +42,11 @@ except Exception:
 PD_HEADER_RE = re.compile(r"^//\s*PD_CODE:\s*(.*)$")
 KH_HEADER_RE = re.compile(r"^//\s*KHOVANOV:\s*(.*)$")
 CPPKH_TERM_RE = re.compile(r"q\^(-?\d+)\*t\^(-?\d+)\*Z\[([^\]]*)\]")
-SAGE_POLYNOMIAL_CACHE_VERSION = int(3)
+SAGE_POLYNOMIAL_CACHE_VERSION = int(4)
 
 
 def _trim_cppkh_spaces(text):
-    return text.strip().replace(" ", "")
+    return re.sub(r"\s+", "", text.strip())
 
 
 def parse_generated_khovanov_file(path):
@@ -84,17 +84,33 @@ def parse_pd_code_from_file(path):
 def parse_cppkh_homology(text):
     """Parse one cppkh homology line into a canonical tuple."""
     terms = []
-    for match in CPPKH_TERM_RE.finditer(_trim_cppkh_spaces(text)):
+    compact = _trim_cppkh_spaces(text)
+    if not compact:
+        return ()
+
+    pos = 0
+    while pos < len(compact):
+        match = CPPKH_TERM_RE.match(compact, pos)
+        if not match:
+            raise ValueError("could not parse cppkh homology line: {!r}".format(text))
         q_degree = int(match.group(1))
         t_degree = int(match.group(2))
         inv_text = match.group(3).strip()
+        if not inv_text:
+            raise ValueError("empty invariant factor list in cppkh homology line: {!r}".format(text))
         invariants = tuple(
             sorted(int(item) for item in inv_text.split(",") if item.strip() != "")
         )
         terms.append((q_degree, t_degree, invariants))
+        pos = match.end()
+        if pos == len(compact):
+            break
+        if compact[pos] != "+":
+            raise ValueError("could not parse cppkh homology line: {!r}".format(text))
+        pos += 1
+        if pos == len(compact):
+            raise ValueError("trailing plus in cppkh homology line: {!r}".format(text))
 
-    if not terms and _trim_cppkh_spaces(text):
-        raise ValueError("could not parse cppkh homology line: {!r}".format(text))
     return tuple(sorted(terms))
 
 
@@ -284,6 +300,13 @@ def sage_khovanov_for_pd(pd_code, implementation=None):
     return sage_homology_to_canonical(homology)
 
 
+def sage_khovanov_cppkh_text_for_pd(pd_code, implementation=None):
+    """Compute Sage Khovanov homology and render it in cppkh output format."""
+    return canonical_homology_to_cppkh_text(
+        sage_khovanov_for_pd(pd_code, implementation=implementation)
+    )
+
+
 def _exponent_tuple(value):
     try:
         return tuple(int(item) for item in value)
@@ -370,8 +393,9 @@ def sage_khovanov_polynomial_for_pd(pd_code):
 def sage_homology_to_canonical(homology):
     """Convert Sage's nested Khovanov dictionary to a canonical tuple."""
     terms = []
-    for q_degree, by_t_degree in homology.items():
-        for t_degree, module in by_t_degree.items():
+    # Sage keys are height -> degree. cppkh prints q=degree and t=height.
+    for t_degree, by_q_degree in homology.items():
+        for q_degree, module in by_q_degree.items():
             invariants = sage_module_to_invariants(module)
             if invariants:
                 terms.append((int(q_degree), int(t_degree), tuple(sorted(invariants))))
@@ -726,13 +750,17 @@ def check_sage_membership_directory(
 
 
 def _sage_pd_khovanov_export_worker(task):
-    key, pd_code = task
+    if len(task) == 2:
+        key, pd_code = task
+        implementation = None
+    else:
+        key, pd_code, implementation = task
     try:
-        polynomial = sage_khovanov_polynomial_for_pd(pd_code)
+        homology = sage_khovanov_cppkh_text_for_pd(pd_code, implementation=implementation)
         return {
             "ok": True,
             "key": key,
-            "homology": polynomial,
+            "homology": homology,
             "error": None,
         }
     except Exception as exc:
@@ -780,6 +808,18 @@ def _line_without_newline(text):
     return text
 
 
+def _is_resumable_cppkh_homology_text(text):
+    if text.startswith("ERROR["):
+        return True
+    if not _trim_cppkh_spaces(text):
+        return False
+    try:
+        parse_cppkh_homology(text)
+        return True
+    except Exception:
+        return False
+
+
 def _output_label_for_path(data_dir, path, recursive=False):
     if recursive:
         return os.path.relpath(path, data_dir).replace(os.sep, "/")
@@ -809,7 +849,7 @@ def _load_sage_polynomial_cache(cache_path):
         with open(cache_path, "r", encoding="utf-8") as fp:
             data = json.load(fp)
     except Exception as exc:
-        print("warning: ignoring unreadable Sage polynomial cache {}: {}".format(cache_path, exc))
+        print("warning: ignoring unreadable Sage homology cache {}: {}".format(cache_path, exc))
         return {}
 
     cache_version = data.get("version")
@@ -819,7 +859,7 @@ def _load_sage_polynomial_cache(cache_path):
         cache_version = None
     if cache_version != int(SAGE_POLYNOMIAL_CACHE_VERSION):
         print(
-            "warning: ignoring Sage polynomial cache {} with version {}; expected {}".format(
+            "warning: ignoring Sage homology cache {} with version {}; expected {}".format(
                 cache_path, data.get("version"), SAGE_POLYNOMIAL_CACHE_VERSION
             )
         )
@@ -827,7 +867,7 @@ def _load_sage_polynomial_cache(cache_path):
 
     entries = data.get("entries", {})
     if not isinstance(entries, dict):
-        print("warning: ignoring malformed Sage polynomial cache {}".format(cache_path))
+        print("warning: ignoring malformed Sage homology cache {}".format(cache_path))
         return {}
     return {
         str(key): str(value)
@@ -845,9 +885,8 @@ def _write_sage_polynomial_cache(cache_path, cache_entries):
     temp_path = cache_path + ".tmp"
     payload = _json_safe({
         "version": int(SAGE_POLYNOMIAL_CACHE_VERSION),
+        "format": "cppkh_homology",
         "sort": "t_then_q",
-        "var1": "q",
-        "var2": "t",
         "entries": {str(key): str(value) for key, value in cache_entries.items()},
     })
     with open(temp_path, "w", encoding="utf-8", newline="\n") as fp:
@@ -908,6 +947,9 @@ def _read_resume_output_prefix(output_path, file_records):
                 break
 
             homology = line[len(prefix):]
+            if not _is_resumable_cppkh_homology_text(homology):
+                stop_reason = "non-cppkh homology format at output line {}".format(resumed + 1)
+                break
             is_error = homology.startswith("ERROR[")
             results[resumed] = {
                 "ok": not is_error,
@@ -970,25 +1012,26 @@ def write_sage_pd_khovanov_directory(
     resume_output=True,
 ):
     """
-    Compute one Sage Khovanov polynomial per txt file and write ordered lines.
+    Compute one Sage Khovanov homology per txt file and write ordered lines.
 
     This function does not inspect existing ``KHOVANOV`` headers and does not
     compare results.  It extracts only ``PD_CODE`` from each selected ``.txt``
-    file, computes ``Link(pd_code).khovanov_polynomial(var1="q", var2="t")``
-    in parallel, and writes one line per file:
+    file, computes ``Link(pd_code).khovanov_homology(ring=ZZ)`` in parallel,
+    and writes one line per file in cppkh-compatible format:
 
-        filename: q^...*t^...
+        filename: q^...*t^...*Z[...]
 
     Duplicate ``PD_CODE`` values are computed only once by default; every file
     still gets its own output line.  Set ``deduplicate_pd=False`` to force one
     Sage computation per file.
-    Successful polynomial computations are cached by ``PD_CODE`` in
+    Successful homology computations are cached by ``PD_CODE`` in
     ``output_path + ".cache.json"`` by default, so reruns skip already-computed
     links.  Set ``cache_path=None`` to disable persistent caching.
     Uncached jobs are scheduled by descending crossing count by default to
     reduce parallel tail latency; set ``schedule="input"`` for input order.
-    Polynomial terms are sorted by ascending ``t`` exponent, then ascending
-    ``q`` exponent.  The output order is the selected file order, not worker
+    Homology terms are sorted exactly like cppkh output: ascending ``t`` degree,
+    then ascending ``q`` degree; invariant factors inside each ``Z[...]`` are
+    sorted ascending.  The output order is the selected file order, not worker
     completion order.
     If ``resume_output`` is true and ``output_path`` already exists, the
     exporter resumes the longest valid ordered output prefix and truncates any
@@ -1000,7 +1043,7 @@ def write_sage_pd_khovanov_directory(
     By default this uses both ``flush`` and ``fsync`` for every ordered write
     batch; set ``fsync_every=0`` if you only need Python flushes.
     If parsing or Sage computation fails for a file, the corresponding output
-    line is still written, with the polynomial field replaced by a single-line
+    line is still written, with the homology field replaced by a single-line
     ``ERROR[...]`` value.
     """
     data_dir = os.path.abspath(str(data_dir))
@@ -1224,7 +1267,7 @@ def write_sage_pd_khovanov_directory(
                 pool = ctx.Pool(processes=worker_count)
                 iterator = pool.imap_unordered(
                     _sage_pd_khovanov_export_worker,
-                    tasks,
+                    [(key, pd_code, implementation) for key, pd_code in tasks],
                     chunksize=max(1, int(chunksize)),
                 )
                 for item in iterator:
@@ -1745,4 +1788,4 @@ def check_khovanov_directory_parallel(
 
 
 print("Loaded Sage Khovanov orientation checker.")
-print("Export Sage PD Khovanov polynomials: write_sage_pd_khovanov_directory(..., output_path, workers=8)")
+print("Export Sage PD Khovanov homology: write_sage_pd_khovanov_directory(..., output_path, workers=8)")
