@@ -206,6 +206,7 @@ write_sage_pd_khovanov_directory(
     "build/sage_pd_khovanov.txt",
     numeric_only=True,
     workers=8,
+    chunksize=4,
     progress_every=25,
 )
 ```
@@ -216,6 +217,13 @@ available. If a file fails to parse or Sage fails to compute its Khovanov
 polynomial, that file still gets a line and the polynomial field is replaced by a
 single-line `ERROR[...]` value.
 
+For speed, the exporter computes duplicate `PD_CODE` values only once by
+default and writes the result to every matching file line. It uses Python
+`flush()` for live file visibility but does not call `fsync()` by default; pass
+`fsync_every=100` or another positive line count only if you need periodic disk
+syncs. Increase `chunksize` to reduce multiprocessing overhead when individual
+files have similar cost.
+
 ```sage
 write_sage_pd_khovanov_directory(
     "data/com_link_gen_10-v0.1.0-com_link_gen-10-3",
@@ -224,6 +232,7 @@ write_sage_pd_khovanov_directory(
     end_index=1000,
     numeric_only=True,
     workers=8,
+    chunksize=4,
     progress_every=25,
 )
 ```

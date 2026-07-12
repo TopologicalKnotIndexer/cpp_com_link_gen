@@ -725,25 +725,19 @@ def check_sage_membership_directory(
 
 
 def _sage_pd_khovanov_export_worker(task):
-    index, path, label, implementation = task
-    del implementation
+    key, pd_code = task
     try:
-        pd_code = parse_pd_code_from_file(path)
         polynomial = sage_khovanov_polynomial_for_pd(pd_code)
         return {
             "ok": True,
-            "index": int(index),
-            "path": path,
-            "label": label,
+            "key": key,
             "homology": polynomial,
             "error": None,
         }
     except Exception as exc:
         return {
             "ok": False,
-            "index": int(index),
-            "path": path,
-            "label": label,
+            "key": key,
             "homology": _one_line_error(exc),
             "error": _one_line_error(exc),
             "error_type": exc.__class__.__name__,
@@ -760,12 +754,13 @@ def _one_line_error(exc):
     return "ERROR[{}]".format(text)
 
 
-def _flush_output_file(fp):
+def _flush_output_file(fp, fsync=False):
     fp.flush()
-    try:
-        os.fsync(fp.fileno())
-    except OSError:
-        pass
+    if fsync:
+        try:
+            os.fsync(fp.fileno())
+        except OSError:
+            pass
 
 
 def _output_label_for_path(data_dir, path, recursive=False):
@@ -787,6 +782,9 @@ def write_sage_pd_khovanov_directory(
     chunksize=1,
     start_method=None,
     progress_every=25,
+    deduplicate_pd=True,
+    flush_every=1,
+    fsync_every=0,
 ):
     """
     Compute one Sage Khovanov polynomial per txt file and write ordered lines.
@@ -798,11 +796,16 @@ def write_sage_pd_khovanov_directory(
 
         filename: q^...*t^...
 
+    Duplicate ``PD_CODE`` values are computed only once by default; every file
+    still gets its own output line.  Set ``deduplicate_pd=False`` to force one
+    Sage computation per file.
     Polynomial terms are sorted by ascending ``t`` exponent, then ascending
     ``q`` exponent.  The output order is the selected file order, not worker
     completion order.
     The output file is opened immediately and flushed as soon as the next
     ordered result line is available, so it can be watched while Sage runs.
+    By default this uses ``flush`` but not ``fsync``; set ``fsync_every`` to a
+    positive line count if you need periodic disk syncs.
     If parsing or Sage computation fails for a file, the corresponding output
     line is still written, with the polynomial field replaced by a single-line
     ``ERROR[...]`` value.
@@ -822,74 +825,148 @@ def write_sage_pd_khovanov_directory(
 
     worker_count = _default_worker_count(workers)
     ctx = _multiprocessing_context(start_method)
-    tasks = [
-        (
-            index,
-            path,
-            _output_label_for_path(data_dir, path, recursive=recursive),
-            implementation,
-        )
+    file_records = [
+        {
+            "index": index,
+            "path": path,
+            "label": _output_label_for_path(data_dir, path, recursive=recursive),
+        }
         for index, path in enumerate(paths)
     ]
 
+    results = [None] * len(file_records)
+    pd_jobs = {}
+    parse_error_count = 0
+    for record in file_records:
+        index = int(record["index"])
+        path = record["path"]
+        label = record["label"]
+        try:
+            pd_code = parse_pd_code_from_file(path)
+            key = repr(pd_code) if deduplicate_pd else "{}:{}".format(index, repr(pd_code))
+            if key not in pd_jobs:
+                pd_jobs[key] = {"pd_code": pd_code, "indices": []}
+            pd_jobs[key]["indices"].append(index)
+        except Exception as exc:
+            parse_error_count += 1
+            results[index] = {
+                "ok": False,
+                "index": index,
+                "path": path,
+                "label": label,
+                "homology": _one_line_error(exc),
+                "error": _one_line_error(exc),
+                "error_type": exc.__class__.__name__,
+                "error_message": str(exc),
+                "traceback": traceback.format_exc(),
+            }
+
+    tasks = [
+        (key, item["pd_code"])
+        for key, item in sorted(pd_jobs.items(), key=lambda kv: kv[1]["indices"][0])
+    ]
+    duplicate_count = len(file_records) - parse_error_count - len(tasks)
+
     print(
-        "Sage PD Khovanov export starting: files={} workers={} start_method={} output={}".format(
-            len(tasks), worker_count, ctx.get_start_method(), output_path
+        "Sage PD Khovanov export starting: files={} unique_pd={} duplicates={} workers={} start_method={} output={}".format(
+            len(file_records), len(tasks), duplicate_count, worker_count, ctx.get_start_method(), output_path
         )
     )
 
     started_at = time.time()
     checked = 0
     written = 0
-    error_count = 0
-    results = [None] * len(tasks)
-    pool = ctx.Pool(processes=worker_count)
+    completed_files = parse_error_count
+    error_count = parse_error_count
+    pool = None
     pool_closed = False
     output_dir = os.path.dirname(output_path)
     if output_dir and not os.path.isdir(output_dir):
         os.makedirs(output_dir)
+
+    flush_every = max(1, int(flush_every))
+    fsync_every = max(0, int(fsync_every))
+    last_flushed = 0
+
+    def write_ready(fp, force=False):
+        nonlocal written, last_flushed
+        before = written
+        while written < len(results) and results[written] is not None:
+            ready = results[written]
+            fp.write("{}: {}\n".format(ready["label"], ready["homology"]))
+            written += 1
+        if force or written != before:
+            should_fsync = fsync_every > 0 and (
+                force or written == len(results) or written % fsync_every == 0
+            )
+            if force or written == len(results) or (written - last_flushed) >= flush_every:
+                _flush_output_file(fp, fsync=should_fsync)
+                last_flushed = written
+
     try:
         with open(output_path, "w", encoding="utf-8", newline="\n") as fp:
-            _flush_output_file(fp)
-            iterator = pool.imap_unordered(
-                _sage_pd_khovanov_export_worker,
-                tasks,
-                chunksize=max(1, int(chunksize)),
-            )
-            for item in iterator:
-                checked += 1
-                results[int(item["index"])] = item
-                if item.get("error") is not None:
-                    error_count += 1
+            _flush_output_file(fp, fsync=False)
+            write_ready(fp)
+            if tasks:
+                pool = ctx.Pool(processes=worker_count)
+                iterator = pool.imap_unordered(
+                    _sage_pd_khovanov_export_worker,
+                    tasks,
+                    chunksize=max(1, int(chunksize)),
+                )
+                for item in iterator:
+                    checked += 1
+                    job = pd_jobs[item["key"]]
+                    indices = job["indices"]
+                    if item.get("error") is not None:
+                        error_count += len(indices)
 
-                while written < len(results) and results[written] is not None:
-                    ready = results[written]
-                    fp.write("{}: {}\n".format(ready["label"], ready["homology"]))
-                    written += 1
-                _flush_output_file(fp)
+                    for index in indices:
+                        record = file_records[index]
+                        results[index] = {
+                            "ok": bool(item.get("ok")),
+                            "index": index,
+                            "path": record["path"],
+                            "label": record["label"],
+                            "homology": item["homology"],
+                            "error": item.get("error"),
+                            "error_type": item.get("error_type"),
+                            "error_message": item.get("error_message"),
+                            "traceback": item.get("traceback"),
+                        }
+                    completed_files += len(indices)
+                    write_ready(fp)
 
-                if progress_every and (
-                    checked == 1 or checked % int(progress_every) == 0 or checked == len(tasks)
-                ):
-                    elapsed = time.time() - started_at
-                    speed = checked / elapsed if elapsed > 0 else 0.0
-                    print(
-                        "  computed {}/{} written={} errors={} speed={:.2f}/s".format(
-                            checked, len(tasks), written, error_count, speed
+                    if progress_every and (
+                        checked == 1 or completed_files % int(progress_every) == 0 or checked == len(tasks)
+                    ):
+                        elapsed = time.time() - started_at
+                        speed = completed_files / elapsed if elapsed > 0 else 0.0
+                        print(
+                            "  computed_unique {}/{} completed_files={}/{} written={} errors={} speed={:.2f} files/s".format(
+                                checked,
+                                len(tasks),
+                                completed_files,
+                                len(file_records),
+                                written,
+                                error_count,
+                                speed,
+                            )
                         )
-                    )
-            else:
-                pool.close()
-                pool_closed = True
+                else:
+                    pool.close()
+                    pool_closed = True
+            write_ready(fp, force=True)
     except Exception:
-        if not pool_closed:
+        if pool is not None and not pool_closed:
             pool.terminate()
             pool_closed = True
         raise
     finally:
-        if not pool_closed:
+        if pool is not None and not pool_closed:
             pool.terminate()
-        pool.join()
+        if pool is not None:
+            pool.join()
 
     missing = [index for index, item in enumerate(results) if item is None]
     if missing:
@@ -900,8 +977,8 @@ def write_sage_pd_khovanov_directory(
 
     elapsed = time.time() - started_at
     print(
-        "Sage PD Khovanov export written: files={} errors={} output={} elapsed={:.1f}s".format(
-            len(results), error_count, output_path, elapsed
+        "Sage PD Khovanov export written: files={} unique_pd={} duplicates={} errors={} output={} elapsed={:.1f}s".format(
+            len(results), len(tasks), duplicate_count, error_count, output_path, elapsed
         )
     )
     return {
@@ -909,11 +986,17 @@ def write_sage_pd_khovanov_directory(
         "output_path": output_path,
         "implementation": implementation,
         "checked": int(len(results)),
+        "unique_pd": int(len(tasks)),
+        "duplicates": int(duplicate_count),
+        "parse_errors": int(parse_error_count),
         "errors": int(error_count),
         "elapsed_seconds": float(elapsed),
         "workers": int(worker_count),
         "recursive": bool(recursive),
         "numeric_only": bool(numeric_only),
+        "deduplicate_pd": bool(deduplicate_pd),
+        "flush_every": int(flush_every),
+        "fsync_every": int(fsync_every),
     }
 
 
