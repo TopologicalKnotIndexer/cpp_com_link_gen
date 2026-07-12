@@ -287,6 +287,46 @@ def sage_module_to_invariants(module):
     return tuple(sorted(_parse_module_repr(str(module))))
 
 
+def _pd_code_literal_text(text):
+    text = str(text).strip()
+    marker = "PD_CODE:"
+    if marker in text:
+        text = text.split(marker, 1)[1].strip()
+    if text.startswith("//"):
+        text = text[2:].strip()
+    if text.startswith("PD["):
+        text = text[2:]
+        text = re.sub(r"\bX\s*\[", "[", text)
+    return text
+
+
+def normalize_pd_code_input(pd_code):
+    """
+    Return ``pd_code`` as ``[[a,b,c,d], ...]`` with Python ``int`` entries.
+
+    Accepts a Sage/Python list, a string ``"[[...], ...]"``, a generated-file
+    header fragment containing ``PD_CODE:``, or KnotTheory text
+    ``PD[X[...], X[...]]``.
+    """
+    if isinstance(pd_code, str):
+        pd_code = ast.literal_eval(_pd_code_literal_text(pd_code))
+
+    normalized = []
+    for index, crossing in enumerate(pd_code):
+        values = [int(item) for item in crossing]
+        if len(values) != 4:
+            raise ValueError("PD crossing {} has {} entries, expected 4".format(index, len(values)))
+        if any(item <= 0 for item in values):
+            raise ValueError("PD labels must be positive integers: {}".format(values))
+        normalized.append(values)
+
+    counts = Counter(label for crossing in normalized for label in crossing)
+    bad = {label: count for label, count in counts.items() if count != 2}
+    if bad:
+        raise ValueError("invalid PD label multiplicities: {}".format(bad))
+    return normalized
+
+
 def _sage_khovanov_homology(link, implementation=None):
     if implementation is None:
         return link.khovanov_homology(ring=ZZ)
@@ -295,7 +335,8 @@ def _sage_khovanov_homology(link, implementation=None):
 
 def sage_khovanov_for_pd(pd_code, implementation=None):
     """Compute canonical Sage Khovanov homology directly from a PD code."""
-    link = Link(pd_code)
+    pd_code = normalize_pd_code_input(pd_code)
+    link = Knots().one() if not pd_code else Link(pd_code)
     homology = _sage_khovanov_homology(link, implementation=implementation)
     return sage_homology_to_canonical(homology)
 
@@ -305,6 +346,27 @@ def sage_khovanov_cppkh_text_for_pd(pd_code, implementation=None):
     return canonical_homology_to_cppkh_text(
         sage_khovanov_for_pd(pd_code, implementation=implementation)
     )
+
+
+def sage_khovanov_cppkh(pd_code, implementation=None, print_result=True):
+    """
+    Compute one PD_CODE with Sage and output cppkh-compatible homology text.
+
+    Example:
+
+        sage: sage_khovanov_cppkh("[[2,3,1,4],[4,1,3,2]]")
+
+    Returns the same string that it prints by default.
+    """
+    text = sage_khovanov_cppkh_text_for_pd(pd_code, implementation=implementation)
+    if print_result:
+        print(text)
+    return text
+
+
+def print_sage_khovanov_cppkh(pd_code, implementation=None):
+    """Explicit printing alias for Sage REPL use."""
+    return sage_khovanov_cppkh(pd_code, implementation=implementation, print_result=True)
 
 
 def _exponent_tuple(value):
@@ -1788,4 +1850,5 @@ def check_khovanov_directory_parallel(
 
 
 print("Loaded Sage Khovanov orientation checker.")
+print("Single PD_CODE: sage_khovanov_cppkh('[[2,3,1,4],[4,1,3,2]]')")
 print("Export Sage PD Khovanov homology: write_sage_pd_khovanov_directory(..., output_path, workers=8)")

@@ -188,6 +188,21 @@ and PD round trips.
 
 ## SageMath Khovanov Homology Export
 
+For a single PD code, load the Sage helper and call `sage_khovanov_cppkh`.
+It computes Sage Khovanov homology over `ZZ`, renders the result in the same
+`q^...*t^...*Z[...]` format as the C++/`cppkh` path, prints the value, and also
+returns it as a string:
+
+```sage
+load("sage/check_oriented_khovanov.sage")
+
+sage_khovanov_cppkh("[[2,3,1,4],[4,1,3,2]]")
+```
+
+The single-PD helper accepts a Sage/Python list, a string `[[...], ...]`, a
+generated-file header fragment containing `PD_CODE:`, or KnotTheory-style text
+such as `PD[X[2,3,1,4], X[4,1,3,2]]`.
+
 The Sage helper can export one Sage-computed Khovanov homology value for every
 selected generated `.txt` file. It extracts only `PD_CODE`, lets Sage construct
 the link directly from that PD code, computes
