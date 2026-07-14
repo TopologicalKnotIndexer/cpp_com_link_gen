@@ -13,7 +13,7 @@ It keeps the same generated file format:
 The generator uses the bundled `prime-link-knot-10` PD tables, parses the
 `link-rep` text format directly, fixes connected-sum/orientation handling in
 C++, and computes Khovanov homology through
-[`GGN-2015/cppkh`](https://github.com/GGN-2015/cppkh).
+[`TopologicalKnotIndexer/cppkh`](https://github.com/TopologicalKnotIndexer/cppkh).
 The vendored backend is synchronized to upstream commit
 `37b3cc345b3b80844239708edce2848062dfcde1`, including its Sage-compatible
 link crossing-orientation fix.
@@ -32,10 +32,12 @@ Set `CXX` to choose a compiler:
 CXX=clang++ python build.py
 ```
 
-On Windows with the requested conda environment:
+On Windows PowerShell, an explicit compiler path can be selected without
+changing the project:
 
 ```powershell
-conda run -n math_env python build.py
+$env:CXX = "C:\path\to\g++.exe"
+python build.py
 ```
 
 The executable is written to `build/cpp_com_link_gen` or
@@ -171,8 +173,10 @@ relabelled or multi-component PD inputs against another implementation.
 python tests/smoke_test.py
 ```
 
-The test uses a temporary data root and does not write generated datasets into
-the repository.
+The test uses the prime-knot/link tables committed under
+`data/prime_link_knot_10`, copies them to a temporary data root, and does not
+write generated datasets into the repository. A fresh checkout therefore does
+not need the separate data project or a network connection.
 
 ## Algorithm Validation
 
@@ -193,8 +197,8 @@ For an additional mature-library cross-check, install Spherogram in the Python
 environment and require it during validation:
 
 ```powershell
-conda run -n math_env python -m pip install spherogram
-conda run -n math_env python tests\algorithm_validation.py --require-spherogram
+python -m pip install spherogram
+python tests\algorithm_validation.py --require-spherogram
 ```
 
 When Spherogram is available, the validation suite constructs independent
@@ -284,7 +288,7 @@ write_sage_pd_khovanov_directory(
 
 ## References
 
-- `cppkh`: <https://github.com/GGN-2015/cppkh>
+- `cppkh`: <https://github.com/TopologicalKnotIndexer/cppkh>
 - Spherogram link diagrams: <https://github.com/3-manifolds/Spherogram>
 - SageMath knot/link functionality and PD-code conventions:
   <https://doc.sagemath.org/html/en/reference/knots/>

@@ -13,7 +13,6 @@ import os
 import platform
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 
@@ -21,7 +20,6 @@ ROOT = Path(__file__).resolve().parent
 BUILD = ROOT / "build"
 THIRD_PARTY_CPPKH = ROOT / "third_party" / "cppkh"
 THIRD_PARTY_PD_DIAGRAM = ROOT / "third_party" / "pd_code_to_diagram" / "cpp_src"
-CPPKH_URL = "https://github.com/GGN-2015/cppkh.git"
 
 
 def exe_name(name: str) -> str:
@@ -33,17 +31,14 @@ def run(cmd: list[str], cwd: Path | None = None) -> None:
     subprocess.check_call(cmd, cwd=str(cwd) if cwd else None)
 
 
-def ensure_cppkh() -> None:
+def require_cppkh() -> None:
     src = THIRD_PARTY_CPPKH / "src" / "main.cpp"
     if src.is_file():
         return
-    THIRD_PARTY_CPPKH.parent.mkdir(parents=True, exist_ok=True)
-    if THIRD_PARTY_CPPKH.exists():
-        raise SystemExit(
-            f"{THIRD_PARTY_CPPKH} exists but does not look like cppkh; "
-            "remove it or provide third_party/cppkh/src/main.cpp"
-        )
-    run(["git", "clone", CPPKH_URL, str(THIRD_PARTY_CPPKH)])
+    raise SystemExit(
+        f"Tracked dependency source is missing: {src}. "
+        "Restore the ordinary third_party/cppkh files from this repository."
+    )
 
 
 def find_compiler() -> str:
@@ -73,7 +68,7 @@ def quote_define_path(path: Path) -> str:
 
 
 def build(args: argparse.Namespace) -> Path:
-    ensure_cppkh()
+    require_cppkh()
     BUILD.mkdir(parents=True, exist_ok=True)
 
     cxx = find_compiler()
